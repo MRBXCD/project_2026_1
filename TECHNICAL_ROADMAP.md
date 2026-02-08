@@ -1,86 +1,88 @@
-# SemEval 2026 Task A: Humor Generation — 技术路线与实现方案
+# SemEval 2026 Task A: Humor Generation — Technical Roadmap and Implementation Plan
 
-## 目录
+## Table of Contents
 
-- [1. 项目概览](#1-项目概览)
-- [2. 技术架构总览](#2-技术架构总览)
-- [3. 环境与依赖](#3-环境与依赖)
-- [4. 数据流水线](#4-数据流水线)
-  - [4.1 SFT 数据准备](#41-sft-数据准备)
-  - [4.2 GRPO 训练数据与 Reward 设计](#42-grpo-训练数据与-reward-设计)
+- [1. Project Overview](#1-project-overview)
+- [2. Technical Architecture Overview](#2-technical-architecture-overview)
+- [3. Environment and Dependencies](#3-environment-and-dependencies)
+- [4. Data Pipeline](#4-data-pipeline)
+  - [4.1 SFT Data Preparation](#41-sft-data-preparation)
+  - [4.2 GRPO Training Data and Reward Design](#42-grpo-training-data-and-reward-design)
 - [5. Stage 1: Supervised Fine-Tuning (SFT)](#5-stage-1-supervised-fine-tuning-sft)
-  - [5.1 SFT 的目标](#51-sft-的目标)
-  - [5.2 LoRA 配置](#52-lora-配置)
-  - [5.3 训练配置与代码](#53-训练配置与代码)
+  - [5.1 SFT Objectives](#51-sft-objectives)
+  - [5.2 LoRA Configuration](#52-lora-configuration)
+  - [5.3 Training Configuration and Code](#53-training-configuration-and-code)
 - [6. Stage 2: Group Relative Policy Optimization (GRPO)](#6-stage-2-group-relative-policy-optimization-grpo)
-  - [6.1 GRPO 原理速览](#61-grpo-原理速览)
-  - [6.2 Reward Function 设计（核心）](#62-reward-function-设计核心)
-  - [6.3 训练配置与代码](#63-训练配置与代码)
-- [7. 推理与约束满足](#7-推理与约束满足)
+  - [6.1 GRPO Principle Overview](#61-grpo-principle-overview)
+  - [6.2 Reward Function Design (Core)](#62-reward-function-design-core)
+  - [6.3 Training Configuration and Code](#63-training-configuration-and-code)
+- [7. Inference and Constraint Satisfaction](#7-inference-and-constraint-satisfaction)
   - [7.1 Rejection Sampling](#71-rejection-sampling)
-  - [7.2 推理流水线](#72-推理流水线)
-- [8. 评估方案](#8-评估方案)
-- [9. 项目目录结构（建议）](#9-项目目录结构建议)
-- [10. 时间线与里程碑](#10-时间线与里程碑)
-- [附录 A: GRPO 数学原理](#附录-a-grpo-数学原理)
-- [附录 B: 常见问题与调参建议](#附录-b-常见问题与调参建议)
+  - [7.2 Inference Pipeline](#72-inference-pipeline)
+- [8. Evaluation Scheme](#8-evaluation-scheme)
+- [9. Project Directory Structure (Proposed)](#9-project-directory-structure-proposed)
+- [10. Timeline and Milestones](#10-timeline-and-milestones)
+- [Appendix A: GRPO Mathematical Principles](#appendix-a-grpo-mathematical-principles)
+- [Appendix B: FAQ and Hyperparameter Tuning Suggestions](#appendix-b-faq-and-hyperparameter-tuning-suggestions)
 
 ---
 
-## 1. 项目概览
+## 1. Project Overview
 
-| 项目 | 内容 |
-|------|------|
-| **任务** | SemEval 2026 Task A — 给定新闻标题（+ 可选关键词约束），生成幽默短文本 |
-| **语言** | 英文、中文、西班牙语 |
-| **基座模型** | Qwen3-8B（Apache 2.0 开源，支持 119 种语言） |
-| **训练框架** | HuggingFace TRL + PEFT (LoRA) + Accelerate |
-| **训练流程** | SFT → GRPO |
-| **硬件** | 单张 80GB GPU (A100/H100) |
-| **训练精度** | bf16 混合精度 |
+| Item | Content |
+|---|---|
+| **Task** | SemEval 2026 Task A — Generate short humorous text given a news headline (+ optional keyword constraints) |
+| **Languages** | English, Chinese, Spanish |
+| **Base Model** | Qwen3-8B (Apache 2.0 open source, supports 119 languages) |
+| **Training Framework** | HuggingFace TRL + PEFT (LoRA) + Accelerate |
+| **Training Process** | SFT → GRPO |
+| **Hardware** | Single 80GB GPU (A100/H100) |
+| **Training Precision** | bf16 mixed precision |
 
 ---
 
-## 2. 技术架构总览
+## 2. Technical Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     整体 Pipeline 架构                           │
+│                     Overall Pipeline Architecture               │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌──────────┐      ┌──────────────┐      ┌─────────────────┐   │
-│  │  原始数据  │─────▶│  数据预处理    │─────▶│  SFT 数据集      │   │
-│  │(rJokes,   │      │(清洗/格式化/  │      │({prompt,        │   │
-│  │ CFun,     │      │ 合成任务格式)  │      │  completion})   │   │
-│  │ HAHA, ...) │      └──────────────┘      └────────┬────────┘   │
+│  │  Raw     │─────▶│  Data Prep   │─────▶│  SFT Dataset    │   │
+│  │  Data    │      │(Clean/Format/│      │({prompt,        │   │
+│  │(rJokes,  │      │ Synthesize)  │      │  completion})   │   │
+│  │ CFun,    │      └──────────────┘      └────────┬────────┘   │
+│  │ HAHA,...)│                                       │            │
 │  └──────────┘                                       │            │
 │                                                     ▼            │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │              Stage 1: SFT (LoRA Fine-Tuning)             │   │
-│  │  Qwen3-8B + LoRA → 学习幽默风格 + 任务格式映射              │   │
+│  │  Qwen3-8B + LoRA → Learn Humor Style + Task Mapping      │   │
 │  └──────────────────────────┬───────────────────────────────┘   │
 │                              │                                   │
 │                              ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │              Stage 2: GRPO (在线 RL)                      │   │
+│  │              Stage 2: GRPO (Online RL)                   │   │
 │  │                                                          │   │
 │  │  ┌─────────┐    ┌──────────────┐    ┌────────────────┐  │   │
 │  │  │ Policy  │───▶│  Group       │───▶│  Reward        │  │   │
 │  │  │ Model   │    │  Sampling    │    │  Function      │  │   │
-│  │  │(SFT后)  │    │  (G=8条/组)  │    │  (规则+LLM)    │  │   │
+│  │  │(Post-SFT)│    │  (G=8/group) │    │  (Rule+LLM)    │  │   │
 │  │  └────┬────┘    └──────────────┘    └────────┬───────┘  │   │
 │  │       │                                       │          │   │
 │  │       │         ┌──────────────┐              │          │   │
 │  │       └─────────│  GRPO Update │◀─────────────┘          │   │
-│  │                 │  (组内相对    │                          │   │
-│  │                 │   优势估计)   │                          │   │
+│  │                 │  (Group-Rel  │                          │   │
+│  │                 │   Advantage) │                          │   │
 │  │                 └──────────────┘                          │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                              │                                   │
 │                              ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │           Inference: Rejection Sampling                   │   │
-│  │  生成 N 个候选 → 硬约束过滤 → 幽默评分 → 选最佳              │   │
+│  │  Generate N candidates → Hard Constraint Filter →        │   │
+│  │  Humor Score → Select Best                               │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -88,9 +90,9 @@
 
 ---
 
-## 3. 环境与依赖
+## 3. Environment and Dependencies
 
-### 3.1 核心依赖
+### 3.1 Core Dependencies
 
 ```txt
 # requirements.txt
@@ -104,62 +106,62 @@ datasets>=3.0.0
 vllm>=0.7.0
 flash-attn>=2.7.0
 
-# 数据处理
+# Data Processing
 pandas>=2.0.0
 numpy>=1.24.0
 
-# 评估
+# Evaluation
 rouge-score
 nltk
 scikit-learn
 
-# 实验管理
+# Experiment Management
 wandb
 tensorboard
 tqdm
 
-# 推理加速 (可选)
+# Inference Acceleration (Optional)
 vllm>=0.7.0
 ```
 
-> **注意**: `trl>=0.18.0` 是关键，因为 GRPOTrainer 在较新版本中才成熟。建议安装时不指定上界版本，直接用最新版。
+> **Note**: `trl>=0.18.0` is critical because GRPOTrainer matured in newer versions. It is recommended not to specify an upper bound version during installation, just use the latest.
 
-### 3.2 Dockerfile 更新建议
+### 3.2 Dockerfile Update Suggestions
 
-现有 Dockerfile 基本可用，但建议更新 `trl` 和 `transformers` 版本以确保 GRPO 支持。具体版本在安装时用 `pip install --upgrade` 获取最新即可。
+The existing Dockerfile is basically usable, but it is recommended to update `trl` and `transformers` versions to ensure GRPO support. Use `pip install --upgrade` during installation to get the latest versions.
 
-### 3.3 模型下载
+### 3.3 Model Download
 
 ```bash
-# 使用 huggingface-cli 下载模型（在容器内执行）
+# Use huggingface-cli to download model (execute inside container)
 huggingface-cli download Qwen/Qwen3-8B --local-dir /workspace/models/Qwen3-8B
 ```
 
 ---
 
-## 4. 数据流水线
+## 4. Data Pipeline
 
-### 4.1 SFT 数据准备
+### 4.1 SFT Data Preparation
 
-SFT 数据的核心目标是让模型学会 **两件事**：
-1. **幽默语言风格** — 来自真实幽默语料
-2. **任务输入-输出映射** — 来自合成的任务格式化数据
+The core goal of SFT data is to teach the model **two things**:
+1. **Humorous Language Style** — From real humor corpus
+2. **Task Input-Output Mapping** — From synthesized task-formatted data
 
-#### 4.1.1 数据来源与用途
+#### 4.1.1 Data Sources and Usage
 
-| 数据集 | 语言 | 用途 | 格式 |
-|--------|------|------|------|
-| rJokes (Reddit) | EN | 通用幽默 + 偏好排序（有评分） | TSV with scores |
-| News Headlines Sarcasm | EN | **弃用**（讽刺≠幽默，格式不匹配）| - |
-| CFun | ZH | 通用幽默 | Arrow (HuggingFace) |
-| HAHA 2019 | ES | 通用幽默 | CSV with scores |
-| **合成数据** | EN/ZH/ES | **任务格式化训练** | 用强模型生成 |
+| Dataset | Language | Usage | Format |
+|---|---|---|---|
+| rJokes (Reddit) | EN | General Humor + Preference Ranking (with scores) | TSV with scores |
+| News Headlines Sarcasm | EN | **Deprecated** (Sarcasm ≠ Humor, format mismatch) | - |
+| CFun | ZH | General Humor | Arrow (HuggingFace) |
+| HAHA 2019 | ES | General Humor | CSV with scores |
+| **Synthesized Data** | EN/ZH/ES | **Task Formatted Training** | Generated by strong models |
 
-#### 4.1.2 SFT 数据格式
+#### 4.1.2 SFT Data Format
 
-所有数据统一为 **对话格式（chat template）** 以匹配 Qwen3 的 chat format：
+All data is unified into **chat template** format to match Qwen3's chat format:
 
-**类型 A：通用幽默数据（教风格）**
+**Type A: General Humor Data (Teaching Style)**
 
 ```json
 {
@@ -176,7 +178,7 @@ SFT 数据的核心目标是让模型学会 **两件事**：
 }
 ```
 
-**类型 B：任务格式化数据（教映射）— 这部分非常重要**
+**Type B: Task Formatted Data (Teaching Mapping) — This part is crucial**
 
 ```json
 {
@@ -193,28 +195,28 @@ SFT 数据的核心目标是让模型学会 **两件事**：
 }
 ```
 
-> **关键**: 类型 B 的数据需要通过合成生成（见下方脚本）。建议 SFT 数据中类型 A 和类型 B 的比例大约为 **6:4** 或 **7:3**。
+> **Key**: Type B data needs to be generated through synthesis (see script below). It is recommended that the ratio of Type A to Type B in SFT data be approximately **6:4** or **7:3**.
 
-#### 4.1.3 数据合成脚本思路
+#### 4.1.3 Data Synthesis Script Idea
 
-任务格式化数据（类型 B）的合成流程：
+Synthesis flow for task-formatted data (Type B):
 
 ```python
 """
-合成任务格式化 SFT 数据的思路示例（伪代码）
+Example idea for synthesizing task-formatted SFT data (Pseudocode)
 
-核心思想：
-1. 从新闻数据集（如 SemEval 提供的 headlines 或公开新闻数据集）中抽取标题
-2. 从词表中随机配对两个低频词作为关键词约束
-3. 调用强模型（Gemini / GPT-4）生成符合约束的幽默回复
-4. 进行质量过滤后存储
+Core Idea:
+1. Extract headlines from news datasets (e.g., SemEval provided headlines or public news datasets)
+2. Randomly pair two low-frequency words from vocabulary as keyword constraints
+3. Call strong model (Gemini / GPT-4) to generate humorous responses satisfying constraints
+4. Perform quality filtering and store
 """
 import random
 import json
 
 
 def build_prompt_for_synthesis(headline: str, word1: str, word2: str, lang: str) -> str:
-    """构造让强模型生成幽默回复的 prompt"""
+    """Construct prompt to let strong model generate humorous response"""
     if lang == "en":
         return (
             f"You are a professional comedy writer. "
@@ -255,7 +257,7 @@ def build_prompt_for_synthesis(headline: str, word1: str, word2: str, lang: str)
 
 def build_sft_example(headline: str, word1: str, word2: str, 
                        response: str, lang: str) -> dict:
-    """将合成结果包装成 SFT 训练格式"""
+    """Wrap synthesis result into SFT training format"""
     if lang == "en":
         user_msg = (
             f"You are a witty comedian. Given the following news headline, "
@@ -289,14 +291,14 @@ def build_sft_example(headline: str, word1: str, word2: str,
     }
 
 
-# === 合成流程（概念代码，需要补充 API 调用逻辑）===
+# === Synthesis Flow (Conceptual code, needs API call logic) ===
 def synthesize_task_data(headlines: list, word_pairs: list, lang: str, 
                           api_call_fn, n_samples: int = 500) -> list:
     """
-    headlines: 新闻标题列表
-    word_pairs: [(word1, word2), ...] 关键词对列表
-    lang: 语言代码 "en" / "zh" / "es"
-    api_call_fn: 调用强模型的函数 (prompt) -> response
+    headlines: List of news headlines
+    word_pairs: [(word1, word2), ...] List of keyword pairs
+    lang: Language code "en" / "zh" / "es"
+    api_call_fn: Function to call strong model (prompt) -> response
     """
     results = []
     for i in range(n_samples):
@@ -306,7 +308,7 @@ def synthesize_task_data(headlines: list, word_pairs: list, lang: str,
         synthesis_prompt = build_prompt_for_synthesis(headline, w1, w2, lang)
         response = api_call_fn(synthesis_prompt)
         
-        # 质量过滤：检查关键词是否真的出现在回复中
+        # Quality Filter: Check if keywords actually appear in response
         if w1.lower() in response.lower() and w2.lower() in response.lower():
             example = build_sft_example(headline, w1, w2, response, lang)
             results.append(example)
@@ -314,24 +316,24 @@ def synthesize_task_data(headlines: list, word_pairs: list, lang: str,
     return results
 ```
 
-#### 4.1.4 rJokes 数据处理要点
+#### 4.1.4 rJokes Data Processing Points
 
-rJokes 数据集自带评分，可以做两件事：
-1. **SFT**: 筛选高评分（如 score > 10）的笑话作为回复语料
-2. **后续 Reward Model 训练**（如果需要）: 用高评分 vs 低评分构造偏好对
+rJokes dataset comes with scores, which can be used for two things:
+1. **SFT**: Filter high-score (e.g., score > 10) jokes as response corpus
+2. **Subsequent Reward Model Training** (if needed): Construct preference pairs using high-score vs low-score
 
 ```python
-"""rJokes 数据预处理思路"""
+"""rJokes Data Preprocessing Idea"""
 import pandas as pd
 
-# rJokes TSV 格式通常为: id, body (setup), score, ...
-# 根据实际列名调整
+# rJokes TSV format usually is: id, body (setup), score, ...
+# Adjust based on actual column names
 df = pd.read_csv("data/sft/raw/rjoke/train.tsv.gz", sep="\t", compression="gzip")
 
-# 筛选高质量笑话用于 SFT
+# Filter high quality jokes for SFT
 high_quality = df[df["score"] > 10].copy()
 
-# 转为 SFT 格式
+# Convert to SFT format
 sft_data = []
 generic_prompts_en = [
     "Tell me a joke.",
@@ -342,7 +344,7 @@ generic_prompts_en = [
 ]
 
 for _, row in high_quality.iterrows():
-    joke_text = row["body"]  # 根据实际列名调整
+    joke_text = row["body"]  # Adjust based on actual column name
     prompt = random.choice(generic_prompts_en)
     sft_data.append({
         "messages": [
@@ -352,77 +354,77 @@ for _, row in high_quality.iterrows():
     })
 ```
 
-### 4.2 GRPO 训练数据与 Reward 设计
+### 4.2 GRPO Training Data and Reward Design
 
-GRPO 阶段的"训练数据"不是传统意义上的标注数据，而是 **prompt 集合**。模型对每个 prompt 自行生成多条回复（rollout），然后由 reward function 打分。
+"Training data" in the GRPO stage is not traditional labeled data, but a **collection of prompts**. The model generates multiple responses (rollouts) for each prompt, which are then scored by a reward function.
 
-#### 4.2.1 GRPO Prompt 来源
+#### 4.2.1 GRPO Prompt Sources
 
-| 来源 | 说明 |
-|------|------|
-| SemEval 训练 prompt | `data/semeval_task/task-a-{en,es,zh}.tsv` 中提供的标题和关键词 |
-| 合成 prompt | 从新闻数据集中抽取额外标题 + 随机关键词配对 |
+| Source | Description |
+|---|---|
+| SemEval Training Prompts | Headlines and keywords provided in `data/semeval_task/task-a-{en,es,zh}.tsv` |
+| Synthesized Prompts | Extra headlines extracted from news datasets + random keyword pairs |
 
-> **注意**: 从你的数据来看，SemEval TSV 文件中 word1/word2 列目前是 `-`（即尚未提供关键词约束）。这意味着当前阶段你可以先专注于**新闻标题子任务**，关键词约束等 SemEval 公布完整数据后再补充。
+> **Note**: Based on your data, the word1/word2 columns in SemEval TSV files are currently `-` (i.e., keyword constraints are not yet provided). This means for the current stage you can focus on the **headline subtask**, and add keyword constraints later when SemEval releases full data.
 
-#### 4.2.2 Reward Function 设计（核心中的核心）
+#### 4.2.2 Reward Function Design (Core of the Core)
 
-GRPO 的训练效果**高度依赖 reward function 的质量**。我们设计一个**复合 reward function**，包含规则项和模型打分项：
+The effectiveness of GRPO training **highly depends on the quality of the reward function**. We design a **composite reward function**, including rule-based terms and model scoring terms:
 
 ```python
 """
-GRPO Reward Function 设计
+GRPO Reward Function Design
 
 Reward = R_format + R_keyword + R_relevance + R_humor
 
-其中:
-- R_format:  格式合规性（硬约束，规则检查）
-- R_keyword: 关键词包含（硬约束，规则检查）
-- R_relevance: 与新闻标题的相关性（软约束，可选）
-- R_humor:   幽默程度（软约束，LLM-as-Judge 或 Reward Model）
+Where:
+- R_format:  Format compliance (Hard constraint, rule check)
+- R_keyword: Keyword inclusion (Hard constraint, rule check)
+- R_relevance: Relevance to news headline (Soft constraint, optional)
+- R_humor:   Humor level (Soft constraint, LLM-as-Judge or Reward Model)
 """
 import re
 
 
 def reward_format(response: str) -> float:
     """
-    格式合规性检查
+    Format compliance check
     
-    规则:
-    - 必须是非空文本
-    - 长度在合理范围内（如 10-280 字符）
-    - 不包含大量重复（degeneracy 检测）
+    Rules:
+    - Must be non-empty text
+    - Length within reasonable range (e.g., 10-280 characters)
+    - No significant repetition (degeneracy check)
     """
     if not response or not response.strip():
         return -2.0
     
     text = response.strip()
     
-    # 长度检查
+    # Length check
     if len(text) < 10:
         return -1.0
     if len(text) > 280:
         return -0.5
     
-    # 重复检测 (简单的 n-gram degeneracy check)
+    # Repetition check (simple n-gram degeneracy check)
     words = text.split()
     if len(words) >= 4:
         trigrams = [tuple(words[i:i+3]) for i in range(len(words)-2)]
         unique_ratio = len(set(trigrams)) / len(trigrams)
-        if unique_ratio < 0.5:  # 超过一半的 trigram 是重复的
+        if unique_ratio < 0.5:  # More than half of trigrams are repeated
             return -1.5
     
-    return 0.5  # 格式合规的基础奖励
+    return 0.5  # Base reward for format compliance
 
 
 def reward_keyword(response: str, keywords: list[str]) -> float:
     """
-    关键词包含检查
+    Keyword inclusion check
     
-    每包含一个关键词得 +1.0，全部包含额外 bonus +0.5
-    未包含任何关键词扣 -1.0
+    +1.0 for each included keyword, extra bonus +0.5 if all included
+    -1.0 if no keyword is included
     """
-    if not keywords:  # 无关键词约束的 prompt
+    if not keywords:  # Prompt with no keyword constraints
         return 0.0
     
     text = response.lower()
@@ -431,21 +433,21 @@ def reward_keyword(response: str, keywords: list[str]) -> float:
     if hits == 0:
         return -1.0
     elif hits == len(keywords):
-        return hits * 1.0 + 0.5  # 全部命中 bonus
+        return hits * 1.0 + 0.5  # All hit bonus
     else:
-        return hits * 1.0 - 0.5  # 部分命中
+        return hits * 1.0 - 0.5  # Partial hit
 
 
 def reward_humor_llm_judge(prompt: str, response: str, 
                             judge_fn) -> float:
     """
-    使用外部 LLM 评估幽默程度
+    Evaluate humor level using external LLM
     
-    judge_fn: 调用外部 LLM 的函数，返回 1-5 的评分
+    judge_fn: Function calling external LLM, returning 1-5 score
     
-    注意: 这个调用较慢且有成本，建议:
-    - 训练初期可以降低调用频率（如每 N 步才用 LLM judge）
-    - 或者用训练好的小 reward model 替代
+    Note: This call is slow and costly, suggestions:
+    - Reduce call frequency in early training (e.g., use LLM judge every N steps)
+    - Or substitute with a trained small reward model
     """
     judge_prompt = f"""Rate the following joke on a scale of 1-5 for humor.
 
@@ -465,24 +467,24 @@ Reply with ONLY a single number (1-5)."""
         score_str = judge_fn(judge_prompt).strip()
         score = int(score_str)
         score = max(1, min(5, score))
-        # 将 1-5 映射到 [-1, 1] 范围
+        # Map 1-5 to [-1, 1] range
         return (score - 3) / 2.0
     except:
-        return 0.0  # 解析失败给中性分
+        return 0.0  # Neutral score on failure
 
 
 def compute_reward(prompt: str, response: str, 
                    keywords: list[str] = None,
                    judge_fn=None) -> float:
     """
-    复合 Reward Function
+    Composite Reward Function
     
-    各项权重可根据实验调整
+    Weights can be adjusted experimentally
     """
     r_format = reward_format(response)
     r_keyword = reward_keyword(response, keywords or [])
     
-    # 如果格式严重不合规，直接返回低分（短路）
+    # If format is severely non-compliant, return low score directly (short-circuit)
     if r_format <= -1.0:
         return r_format
     
@@ -490,63 +492,63 @@ def compute_reward(prompt: str, response: str,
     if judge_fn is not None:
         r_humor = reward_humor_llm_judge(prompt, response, judge_fn)
     
-    # 加权求和（权重是超参数，需要实验调整）
+    # Weighted sum (Weights are hyperparameters, need experimental tuning)
     total = (
-        1.0 * r_format +    # 格式合规
-        2.0 * r_keyword +    # 关键词包含（权重较高，因为是硬约束）
-        1.5 * r_humor        # 幽默程度
+        1.0 * r_format +    # Format compliance
+        2.0 * r_keyword +    # Keyword inclusion (Higher weight as it's hard constraint)
+        1.5 * r_humor        # Humor level
     )
     
     return total
 ```
 
-> **关于 LLM-as-Judge 的成本问题**: 在 GRPO 训练中，如果每个 rollout 都调用外部 API 打分，成本和延迟都很高。实际操作中有几种策略：
+> **About LLM-as-Judge Cost**: In GRPO training, calling external API for every rollout is costly and slow. Several strategies in practice:
 > 
-> 1. **先训一个小的 Reward Model**（推荐）：用 rJokes 的评分数据训一个轻量 reward model（可以是 Qwen3-1.7B + classification head），然后在 GRPO 中用它打分。
-> 2. **分阶段训练**: 初期只用规则 reward（format + keyword），训练稳定后再加入 humor reward。
-> 3. **批量异步调用**: 累积一批 rollout 后批量调用 LLM judge，减少 API 开销。
+> 1. **Train a small Reward Model first** (Recommended): Train a lightweight reward model (can be Qwen3-1.7B + classification head) using rJokes score data, then use it for scoring in GRPO.
+> 2. **Phased Training**: Use rule-based reward (format + keyword) initially, add humor reward after training stabilizes.
+> 3. **Batch Async Calls**: Accumulate a batch of rollouts then call LLM judge asynchronously to reduce API overhead.
 > 
-> **对于课程项目，推荐方案 2**——先用纯规则 reward 跑通 GRPO 流程，确认训练稳定后再逐步引入幽默评分。
+> **For course projects, Scheme 2 is recommended** — First run through GRPO flow with pure rule reward, then gradually introduce humor scoring after confirming stability.
 
 ---
 
 ## 5. Stage 1: Supervised Fine-Tuning (SFT)
 
-### 5.1 SFT 的目标
+### 5.1 SFT Objectives
 
-| 目标 | 说明 |
-|------|------|
-| 学习幽默语言风格 | 从真实笑话语料中获取幽默表达模式 |
-| 学习任务输入-输出映射 | 理解 "标题+关键词 → 笑话" 的生成格式 |
-| 建立 GRPO 的初始策略 | 确保 GRPO 启动时有合理的起点，避免从随机策略开始 |
+| Objective | Description |
+|---|---|
+| Learn Humor Language Style | Acquire humor expression patterns from real joke corpora |
+| Learn Task Input-Output Mapping | Understand generation format "Headline + Keywords → Joke" |
+| Establish Initial Policy for GRPO | Ensure GRPO starts from a reasonable point, avoiding random policy start |
 
-### 5.2 LoRA 配置
+### 5.2 LoRA Configuration
 
 ```python
 from peft import LoraConfig, TaskType
 
 lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
-    r=64,                          # LoRA 秩，8B 模型建议 32-64
-    lora_alpha=128,                # 通常设为 2*r
+    r=64,                          # LoRA rank, 32-64 recommended for 8B model
+    lora_alpha=128,                # Usually set to 2*r
     lora_dropout=0.05,
-    target_modules=[               # Qwen3 的注意力层
+    target_modules=[               # Attention layers of Qwen3
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj"
     ],
-    # 注意: 不要加 "lm_head"，在 SFT 阶段微调 attention + FFN 即可
+    # Note: Do not add "lm_head", fine-tuning attention + FFN is enough for SFT
 )
 ```
 
-> **LoRA rank 选择依据**: 对于 8B 模型，r=64 约产生 ~160M 可训练参数（占总参数 ~2%），在 80GB GPU 上完全没有显存压力。如果发现过拟合，可以降到 r=32。
+> **LoRA rank selection basis**: For 8B model, r=64 produces ~160M trainable parameters (~2% of total), no VRAM pressure on 80GB GPU. If overfitting occurs, reduce to r=32.
 
-### 5.3 训练配置与代码
+### 5.3 Training Configuration and Code
 
 ```python
 """
-SFT 训练脚本骨架
+SFT Training Script Skeleton
 
-文件: scripts/train_sft.py
+File: scripts/train_sft.py
 """
 import torch
 from datasets import load_dataset
@@ -557,26 +559,26 @@ from trl import SFTConfig, SFTTrainer
 
 def main():
     # ============================================================
-    # 1. 加载模型和 Tokenizer
+    # 1. Load Model and Tokenizer
     # ============================================================
     model_name = "Qwen/Qwen3-8B"
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         trust_remote_code=True,
-        padding_side="right",        # SFT 训练时 padding 在右侧
+        padding_side="right",        # Padding on right for SFT training
     )
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,
-        device_map="auto",           # 单卡直接 auto
+        device_map="auto",           # Single card directly auto
         trust_remote_code=True,
-        attn_implementation="flash_attention_2",  # 使用 FlashAttention 2
+        attn_implementation="flash_attention_2",  # Use FlashAttention 2
     )
 
     # ============================================================
-    # 2. LoRA 配置
+    # 2. LoRA Configuration
     # ============================================================
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -590,11 +592,11 @@ def main():
     )
 
     # ============================================================
-    # 3. 加载数据集
+    # 3. Load Dataset
     # ============================================================
-    # 数据集应为 JSON/JSONL 格式，每条包含 "messages" 字段
-    # 示例: {"messages": [{"role": "user", "content": "..."}, 
-    #                      {"role": "assistant", "content": "..."}]}
+    # Dataset should be JSON/JSONL format, each containing "messages" field
+    # Example: {"messages": [{"role": "user", "content": "..."}, 
+    #                        {"role": "assistant", "content": "..."}]}
     dataset = load_dataset(
         "json",
         data_files={
@@ -604,27 +606,27 @@ def main():
     )
 
     # ============================================================
-    # 4. 训练配置
+    # 4. Training Configuration
     # ============================================================
     training_args = SFTConfig(
         output_dir="checkpoints/sft",
         
-        # --- 训练超参 ---
+        # --- Training Hyperparams ---
         num_train_epochs=3,
         per_device_train_batch_size=4,
         per_device_eval_batch_size=4,
-        gradient_accumulation_steps=4,    # 有效 batch_size = 4 * 4 = 16
-        learning_rate=2e-4,               # LoRA 学习率通常比全量微调高
+        gradient_accumulation_steps=4,    # Effective batch_size = 4 * 4 = 16
+        learning_rate=2e-4,               # LoRA LR usually higher than full fine-tuning
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         
-        # --- 精度 ---
+        # --- Precision ---
         bf16=True,
         
-        # --- 序列长度 ---
-        max_seq_length=512,               # 笑话通常较短，512 足够
+        # --- Sequence Length ---
+        max_seq_length=512,               # Jokes usually short, 512 is enough
         
-        # --- 日志与保存 ---
+        # --- Logging and Saving ---
         logging_steps=10,
         eval_strategy="steps",
         eval_steps=100,
@@ -632,16 +634,16 @@ def main():
         save_steps=100,
         save_total_limit=3,
         
-        # --- 其他 ---
-        report_to="wandb",               # 或 "tensorboard"
+        # --- Others ---
+        report_to="wandb",               # or "tensorboard"
         seed=42,
         
         # --- PEFT ---
-        peft_config=lora_config,          # TRL >= 0.18 直接传 LoRA config
+        peft_config=lora_config,          # TRL >= 0.18 pass LoRA config directly
     )
 
     # ============================================================
-    # 5. 创建 Trainer 并训练
+    # 5. Create Trainer and Train
     # ============================================================
     trainer = SFTTrainer(
         model=model,
@@ -653,7 +655,7 @@ def main():
 
     trainer.train()
     
-    # 保存最终模型（只保存 LoRA adapter 权重）
+    # Save final model (Only saves LoRA adapter weights)
     trainer.save_model("checkpoints/sft/final")
     tokenizer.save_pretrained("checkpoints/sft/final")
 
@@ -662,61 +664,61 @@ if __name__ == "__main__":
     main()
 ```
 
-### 5.4 SFT 阶段关键注意事项
+### 5.4 Key Notes for SFT Stage
 
-1. **Qwen3 的 thinking mode**: Qwen3 默认有 "thinking" 模式（会生成 `<think>...</think>` 标签的思考过程）。对于幽默生成任务，建议在推理时**关闭 thinking mode**（通过在 system prompt 中指定 `/no_think`，或者在生成参数中配置）。SFT 数据中的 assistant 回复不应包含 thinking 标签。
+1. **Qwen3 Thinking Mode**: Qwen3 defaults to "thinking" mode (generates thinking process in `<think>...</think>` tags). For humor generation tasks, it is recommended to **disable thinking mode** during inference (specify `/no_think` in system prompt, or configure in generation parameters). Assistant responses in SFT data should not contain thinking tags.
 
-2. **多语言混合训练**: 将英/中/西三种语言的 SFT 数据混合在一起训练（不分开）。Qwen3 本身有强大的多语言能力，混合训练可以互相增益。
+2. **Multilingual Mixed Training**: Train English/Chinese/Spanish SFT data mixed together (not separately). Qwen3 itself has strong multilingual capabilities, mixed training can mutually benefit.
 
-3. **数据量建议**: 总共约 3000-8000 条 SFT 数据即可（太多反而可能过拟合到特定笑话模式）。
+3. **Data Volume Suggestion**: Approx 3000-8000 SFT samples in total (too many might overfit to specific joke patterns).
 
 ---
 
 ## 6. Stage 2: Group Relative Policy Optimization (GRPO)
 
-### 6.1 GRPO 原理速览
+### 6.1 GRPO Principle Overview
 
-GRPO 的核心思想（来自 DeepSeek-R1 论文）：
+Core idea of GRPO (from DeepSeek-R1 paper):
 
-1. **组采样 (Group Sampling)**: 对每个 prompt $x$，用当前策略 $\pi_\theta$ 生成一组 $G$ 个回复 $\{y_1, y_2, \ldots, y_G\}$
-2. **奖励计算**: 对每个回复用 reward function 计算得分 $r_i = R(x, y_i)$
-3. **组内归一化 (Group-Relative Advantage)**: 用组内均值和标准差归一化，得到优势估计：
+1. **Group Sampling**: For each prompt $x$, generate a group of $G$ responses $\{y_1, y_2, \ldots, y_G\}$ using current policy $\pi_\theta$
+2. **Reward Calculation**: Calculate score $r_i = R(x, y_i)$ for each response using reward function
+3. **Group-Relative Advantage**: Normalize using group mean and std dev to get advantage estimate:
    $$\hat{A}_i = \frac{r_i - \text{mean}(\{r_1, \ldots, r_G\})}{\text{std}(\{r_1, \ldots, r_G\}) + \epsilon}$$
-4. **策略更新**: 使用 PPO-clip 风格的目标函数更新策略，但不需要 value model：
+4. **Policy Update**: Update policy using PPO-clip style objective, but without value model:
    $$\mathcal{L} = -\mathbb{E}\left[\min\left(\rho_i \hat{A}_i, \text{clip}(\rho_i, 1\pm\epsilon)\hat{A}_i\right)\right] + \beta \cdot D_{\text{KL}}(\pi_\theta \| \pi_{\text{ref}})$$
-   其中 $\rho_i = \frac{\pi_\theta(y_i|x)}{\pi_{\text{old}}(y_i|x)}$ 是重要性比率。
+   Where $\rho_i = \frac{\pi_\theta(y_i|x)}{\pi_{\text{old}}(y_i|x)}$ is importance ratio.
 
-**相比 PPO 的优势**:
-- **无需 value model**: 省去了训练 critic 的成本和不稳定性
-- **无需单独的 reward model 前向传播**: reward 可以直接由规则函数计算
-- **更稳定**: 组内归一化天然提供 baseline，减少方差
+**Advantages over PPO**:
+- **No Value Model**: Saves cost and instability of training a critic
+- **No separate reward model forward pass**: Reward can be calculated directly by rule functions
+- **More Stable**: Group normalization naturally provides baseline, reducing variance
 
-### 6.2 Reward Function 设计
+### 6.2 Reward Function Design
 
-参见 [4.2.2 节](#422-reward-function-设计核心中的核心) 的详细设计。
+See detailed design in [Section 4.2.2](#422-reward-function-design-core).
 
-**分阶段训练策略（推荐）**:
+**Phased Training Strategy (Recommended)**:
 
-| 阶段 | Reward 组成 | 训练步数 | 目标 |
-|------|------------|---------|------|
-| Phase 1 | `R_format + R_keyword` (纯规则) | ~200-500 steps | 学会满足硬约束 |
-| Phase 2 | `R_format + R_keyword + R_humor` (规则+LLM) | ~300-800 steps | 在满足约束的基础上提升幽默质量 |
+| Phase | Reward Composition | Training Steps | Goal |
+|---|---|---|---|
+| Phase 1 | `R_format + R_keyword` (Pure Rules) | ~200-500 steps | Learn to satisfy hard constraints |
+| Phase 2 | `R_format + R_keyword + R_humor` (Rule+LLM) | ~300-800 steps | Improve humor quality while satisfying constraints |
 
-> 这种分阶段策略的好处是：先用便宜的规则 reward 跑通流程、调好超参，然后再引入昂贵的 LLM judge。避免一开始就烧钱调参。
+> The benefit of this phased strategy is: Run through the flow and tune hyperparameters with cheap rule rewards first, then introduce expensive LLM judge. Avoid burning money on tuning at the start.
 
-### 6.3 训练配置与代码
+### 6.3 Training Configuration and Code
 
 ```python
 """
-GRPO 训练脚本骨架
+GRPO Training Script Skeleton
 
-文件: scripts/train_grpo.py
+File: scripts/train_grpo.py
 
-TRL 的 GRPOTrainer 封装了 GRPO 的核心逻辑:
-- 自动处理 group sampling（每个 prompt 生成 G 个回复）
-- 自动计算 group-relative advantage
-- 自动处理 KL 散度约束
-- 支持自定义 reward function
+TRL's GRPOTrainer encapsulates GRPO core logic:
+- Automatically handles group sampling (generate G responses per prompt)
+- Automatically computes group-relative advantage
+- Automatically handles KL divergence constraints
+- Supports custom reward functions
 """
 import torch
 from datasets import load_dataset
@@ -726,33 +728,33 @@ from trl import GRPOConfig, GRPOTrainer
 
 
 # ============================================================
-# 1. Reward Function（传给 GRPOTrainer 的核心组件）
+# 1. Reward Function (Core component passed to GRPOTrainer)
 # ============================================================
 def reward_fn(completions: list[str], prompts: list[str] = None, 
               **kwargs) -> list[float]:
     """
-    GRPOTrainer 要求的 reward function 签名:
-    - completions: 模型生成的回复列表
-    - prompts: 对应的 prompt 列表 (TRL >= 0.18 支持)
+    Reward function signature required by GRPOTrainer:
+    - completions: List of generated responses
+    - prompts: List of corresponding prompts (Supported in TRL >= 0.18)
     
-    返回: 与 completions 等长的 float 列表
+    Returns: List of floats same length as completions
     
-    注意: GRPOTrainer 会在内部将 prompt 和 completion 组合后传入，
-    具体签名需要查阅你安装的 TRL 版本的文档。
+    Note: GRPOTrainer combines prompt and completion internally before passing,
+    check documentation for specific signature of your installed TRL version.
     """
     rewards = []
     for i, completion in enumerate(completions):
         prompt = prompts[i] if prompts else ""
         
-        # 从 prompt 中解析关键词（如果有）
+        # Extract keywords from prompt (if any)
         keywords = extract_keywords_from_prompt(prompt)
         
-        # 计算复合 reward
+        # Compute composite reward
         r = compute_reward(
             prompt=prompt,
             response=completion,
             keywords=keywords,
-            judge_fn=None,  # Phase 1 不用 LLM judge
+            judge_fn=None,  # Phase 1: No LLM judge
         )
         rewards.append(r)
     
@@ -760,37 +762,37 @@ def reward_fn(completions: list[str], prompts: list[str] = None,
 
 
 def extract_keywords_from_prompt(prompt: str) -> list[str]:
-    """从 prompt 文本中提取关键词约束"""
+    """Extract keyword constraints from prompt text"""
     import re
-    # 匹配 "Required words: word1, word2" 这种格式
+    # Match "Required words: word1, word2" format
     match = re.search(r"Required words?:\s*(.+?)(?:\n|$)", prompt, re.IGNORECASE)
     if not match:
-        # 尝试匹配中文格式
+        # Try matching Chinese format
         match = re.search(r"必须包含的词语[：:]\s*(.+?)(?:\n|$)", prompt)
     if not match:
         return []
     
     words_str = match.group(1).strip()
-    # 按逗号或顿号分割
+    # Split by comma or enumeration comma
     keywords = re.split(r"[,，、]", words_str)
     return [kw.strip() for kw in keywords if kw.strip()]
 
 
 # ============================================================
-# 2. 主训练流程
+# 2. Main Training Flow
 # ============================================================
 def main():
-    # --- 加载 SFT 阶段训练好的模型 ---
-    # 方法: 加载基座模型 + 合并 SFT LoRA adapter
+    # --- Load Model Trained in SFT Stage ---
+    # Method: Load base model + merge SFT LoRA adapter
     base_model_name = "Qwen/Qwen3-8B"
     sft_adapter_path = "checkpoints/sft/final"
 
     tokenizer = AutoTokenizer.from_pretrained(
         base_model_name,
         trust_remote_code=True,
-        padding_side="left",          # GRPO 生成阶段需要 left padding
+        padding_side="left",          # Left padding needed for GRPO generation
     )
-    # 确保 pad_token 存在
+    # Ensure pad_token exists
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -802,17 +804,17 @@ def main():
         attn_implementation="flash_attention_2",
     )
     
-    # 加载并合并 SFT adapter -> 作为 GRPO 的初始策略和参考模型
-    # 注意: TRL GRPOTrainer 会自动处理 reference model
-    # 你可以选择:
-    #   A) 合并 SFT adapter 到基座，然后 GRPO 再套一层新的 LoRA
-    #   B) 直接传入 SFT adapter 路径，让 GRPOTrainer 处理
-    # 这里演示方案 A（更清晰）:
+    # Load and merge SFT adapter -> As initial policy and reference model for GRPO
+    # Note: TRL GRPOTrainer automatically handles reference model
+    # You can choose:
+    #   A) Merge SFT adapter to base, then wrap a new LoRA for GRPO
+    #   B) Pass SFT adapter path directly, let GRPOTrainer handle
+    # Showing Scheme A here (Clearer):
     from peft import PeftModel
     model = PeftModel.from_pretrained(model, sft_adapter_path)
-    model = model.merge_and_unload()  # 合并 LoRA 到基座权重
+    model = model.merge_and_unload()  # Merge LoRA to base weights
 
-    # GRPO 阶段的新 LoRA 配置（可以用更小的 rank）
+    # New LoRA config for GRPO stage (Can use smaller rank)
     grpo_lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=32,
@@ -824,40 +826,40 @@ def main():
         ],
     )
 
-    # --- 加载 GRPO 训练 prompt ---
-    # 数据集只需要 "prompt" 字段
-    # 格式: {"prompt": [{"role": "user", "content": "..."}]}
+    # --- Load GRPO Training Prompts ---
+    # Dataset only needs "prompt" field
+    # Format: {"prompt": [{"role": "user", "content": "..."}]}
     dataset = load_dataset(
         "json",
         data_files="data/grpo/grpo_prompts.jsonl",
         split="train"
     )
 
-    # --- GRPO 训练配置 ---
+    # --- GRPO Training Configuration ---
     grpo_config = GRPOConfig(
         output_dir="checkpoints/grpo",
         
-        # --- GRPO 核心超参 ---
-        num_generations=8,            # G: 每个 prompt 生成的回复数量
-        max_completion_length=256,    # 生成的最大长度
+        # --- GRPO Core Hyperparams ---
+        num_generations=8,            # G: Number of responses per prompt
+        max_completion_length=256,    # Max generation length
         
-        # --- 训练超参 ---
-        num_train_epochs=1,           # GRPO 通常跑 1-2 个 epoch
-        per_device_train_batch_size=1,# GRPO 的 batch_size 通常设小
-                                       # (因为每个 sample 会生成 G 条)
-        gradient_accumulation_steps=8,# 有效 batch = 1 * 8 = 8 个 prompt
-        learning_rate=5e-6,           # RL 阶段学习率要比 SFT 小很多
+        # --- Training Hyperparams ---
+        num_train_epochs=1,           # GRPO usually runs 1-2 epochs
+        per_device_train_batch_size=1,# GRPO batch_size usually small
+                                       # (because each sample generates G items)
+        gradient_accumulation_steps=8,# Effective batch = 1 * 8 = 8 prompts
+        learning_rate=5e-6,           # RL stage LR much smaller than SFT
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         
-        # --- KL 散度约束 ---
-        beta=0.04,                    # KL penalty 系数，防止偏离 SFT 策略太远
-                                       # 太大 → 学不到新东西; 太小 → reward hacking
+        # --- KL Divergence Constraint ---
+        beta=0.04,                    # KL penalty coefficient, prevents deviating too far from SFT policy
+                                       # Too large → Policy doesn't update; Too small → Reward hacking
         
-        # --- 精度 ---
+        # --- Precision ---
         bf16=True,
         
-        # --- 日志与保存 ---
+        # --- Logging and Saving ---
         logging_steps=5,
         save_strategy="steps",
         save_steps=50,
@@ -869,18 +871,18 @@ def main():
         peft_config=grpo_lora_config,
     )
 
-    # --- 创建 Trainer 并训练 ---
+    # --- Create Trainer and Train ---
     trainer = GRPOTrainer(
         model=model,
         args=grpo_config,
         train_dataset=dataset,
         processing_class=tokenizer,
-        reward_funcs=reward_fn,       # 自定义 reward function
+        reward_funcs=reward_fn,       # Custom reward function
     )
 
     trainer.train()
     
-    # 保存
+    # Save
     trainer.save_model("checkpoints/grpo/final")
     tokenizer.save_pretrained("checkpoints/grpo/final")
 
@@ -889,43 +891,43 @@ if __name__ == "__main__":
     main()
 ```
 
-### 6.4 GRPO 训练的关键超参数与调参指南
+### 6.4 GRPO Training Key Hyperparameters and Tuning Guide
 
-| 超参数 | 建议范围 | 说明 |
-|--------|---------|------|
-| `num_generations` (G) | 4 - 16 | 组大小。越大方差越低，但显存和时间消耗线性增长。**建议从 8 开始** |
-| `beta` (KL 系数) | 0.01 - 0.1 | 核心超参。过大导致策略更新不动（模型不变），过小导致 reward hacking（模型发现 reward function 的漏洞）。**建议从 0.04 开始** |
-| `learning_rate` | 1e-6 - 1e-5 | RL 阶段要比 SFT 小 1-2 个数量级。**建议 5e-6** |
-| `per_device_train_batch_size` | 1 - 2 | 因为每个 sample 生成 G 条回复，实际处理量 = batch × G。设小以防 OOM |
-| `gradient_accumulation_steps` | 4 - 16 | 通过累积增大有效 batch，稳定训练 |
-| `max_completion_length` | 128 - 512 | 笑话较短，256 通常够用 |
-| `temperature` (生成时) | 0.7 - 1.0 | GRPO 需要多样性，不要太低。**建议 0.9** |
+| Hyperparameter | Suggested Range | Description |
+|---|---|---|
+| `num_generations` (G) | 4 - 16 | Group size. Larger reduces variance but linearly increases VRAM/time. **Start with 8** |
+| `beta` (KL coeff) | 0.01 - 0.1 | Core hyperparam. Too large prevents policy update; too small causes reward hacking. **Start with 0.04** |
+| `learning_rate` | 1e-6 - 1e-5 | RL stage 1-2 orders of magnitude smaller than SFT. **Suggest 5e-6** |
+| `per_device_train_batch_size` | 1 - 2 | Actual throughput = batch × G. Set small to prevent OOM |
+| `gradient_accumulation_steps` | 4 - 16 | Increase effective batch via accumulation for stability |
+| `max_completion_length` | 128 - 512 | Jokes are short, 256 usually enough |
+| `temperature` (Generation) | 0.7 - 1.0 | GRPO needs diversity, don't set too low. **Suggest 0.9** |
 
-### 6.5 GRPO 训练监控指标
+### 6.5 GRPO Training Monitoring Metrics
 
-训练过程中需要关注以下指标（通过 wandb/tensorboard 观察）：
+Monitor these metrics (via wandb/tensorboard):
 
-| 指标 | 正常趋势 | 异常信号 |
-|------|---------|---------|
-| `reward/mean` | 缓慢上升 | 快速飙升 → reward hacking |
-| `reward/std` | 逐渐下降 | 始终很高 → 训练不稳定 |
-| `kl_divergence` | 缓慢增长，保持适度 | 爆炸 → 降低 lr 或增大 beta |
-| `policy_loss` | 波动但总体下降 | 持续不动 → lr 太小或 reward 信号太弱 |
-| `completion_length` | 相对稳定 | 趋向 max_length → 模型可能在 padding 或 rambling |
+| Metric | Normal Trend | Abnormal Signal |
+|---|---|---|
+| `reward/mean` | Slowly increasing | Rapid spike → reward hacking |
+| `reward/std` | Gradually decreasing | Consistently high → unstable training |
+| `kl_divergence` | Slowly increasing, moderate | Explosion → reduce lr or increase beta |
+| `policy_loss` | Fluctuating but generally decreasing | Flatline → lr too small or reward signal too weak |
+| `completion_length` | Relatively stable | Trending to max_length → model padding or rambling |
 
 ---
 
-## 7. 推理与约束满足
+## 7. Inference and Constraint Satisfaction
 
 ### 7.1 Rejection Sampling
 
-训练完成后，推理阶段使用 rejection sampling 来保证约束满足率：
+After training, use rejection sampling during inference to guarantee constraint satisfaction:
 
 ```python
 """
-推理阶段的 Rejection Sampling
+Rejection Sampling during Inference
 
-文件: scripts/inference.py
+File: scripts/inference.py
 """
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -933,7 +935,7 @@ from peft import PeftModel
 
 
 def load_model(base_model_path: str, adapter_path: str):
-    """加载 GRPO 训练后的模型"""
+    """Load GRPO trained model"""
     tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
@@ -941,9 +943,9 @@ def load_model(base_model_path: str, adapter_path: str):
         device_map="auto",
         trust_remote_code=True,
     )
-    # 加载 GRPO adapter
-    # 注意: 如果 GRPO 是在 SFT-merged 模型上训练的，
-    # 需要先 merge SFT adapter 再加载 GRPO adapter
+    # Load GRPO adapter
+    # Note: If GRPO was trained on SFT-merged model,
+    # Need to merge SFT adapter first then load GRPO adapter
     model = PeftModel.from_pretrained(model, adapter_path)
     model.eval()
     return model, tokenizer
@@ -954,15 +956,15 @@ def generate_candidates(model, tokenizer, prompt: str,
                          max_new_tokens: int = 256,
                          temperature: float = 0.9,
                          top_p: float = 0.95) -> list[str]:
-    """为单个 prompt 生成 N 个候选回复"""
+    """Generate N candidate responses for a single prompt"""
     messages = [{"role": "user", "content": prompt}]
     
-    # 使用 Qwen3 的 chat template
+    # Use Qwen3 chat template
     text = tokenizer.apply_chat_template(
         messages, 
         tokenize=False, 
         add_generation_prompt=True,
-        enable_thinking=False,  # 关闭 thinking mode
+        enable_thinking=False,  # Disable thinking mode
     )
     
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -973,10 +975,10 @@ def generate_candidates(model, tokenizer, prompt: str,
         temperature=temperature,
         top_p=top_p,
         do_sample=True,
-        num_return_sequences=n_candidates,  # 一次生成 N 个
+        num_return_sequences=n_candidates,  # Generate N at once
     )
     
-    # 解码（去掉 prompt 部分）
+    # Decode (Remove prompt part)
     prompt_len = inputs["input_ids"].shape[1]
     candidates = []
     for seq in outputs:
@@ -991,19 +993,19 @@ def rejection_sample(model, tokenizer, prompt: str,
                       n_candidates: int = 16,
                       humor_scorer=None) -> dict:
     """
-    Rejection Sampling 推理流程
+    Rejection Sampling Inference Flow
     
-    返回: {
+    Returns: {
         "best_response": str,
         "all_candidates": list[str],
         "constraint_pass_rate": float,
         "scores": list[float]
     }
     """
-    # Step 1: 生成候选
+    # Step 1: Generate candidates
     candidates = generate_candidates(model, tokenizer, prompt, n_candidates)
     
-    # Step 2: 硬约束过滤
+    # Step 2: Hard constraint filter
     if keywords:
         valid_candidates = []
         for c in candidates:
@@ -1015,9 +1017,9 @@ def rejection_sample(model, tokenizer, prompt: str,
     
     constraint_pass_rate = len(valid_candidates) / len(candidates)
     
-    # Step 3: 如果没有候选通过硬约束，使用 fallback
+    # Step 3: Fallback if no candidate passes hard constraints
     if not valid_candidates:
-        # Fallback: 选包含最多关键词的候选
+        # Fallback: Pick candidate with most keywords
         if keywords:
             best = max(candidates, 
                       key=lambda c: sum(kw.lower() in c.lower() for kw in keywords))
@@ -1030,14 +1032,14 @@ def rejection_sample(model, tokenizer, prompt: str,
             "scores": [],
         }
     
-    # Step 4: 软约束排序（幽默评分）
+    # Step 4: Soft constraint ranking (Humor score)
     if humor_scorer:
         scored = [(c, humor_scorer(prompt, c)) for c in valid_candidates]
         scored.sort(key=lambda x: x[1], reverse=True)
         best = scored[0][0]
         scores = [s for _, s in scored]
     else:
-        # 没有 humor scorer 则随机选一个合规候选
+        # Pick random valid candidate if no scorer
         best = valid_candidates[0]
         scores = []
     
@@ -1049,7 +1051,7 @@ def rejection_sample(model, tokenizer, prompt: str,
     }
 
 
-# === 使用示例 ===
+# === Usage Example ===
 if __name__ == "__main__":
     model, tokenizer = load_model(
         base_model_path="Qwen/Qwen3-8B",
@@ -1075,19 +1077,19 @@ if __name__ == "__main__":
     print(f"Total candidates: {len(result['all_candidates'])}")
 ```
 
-### 7.2 使用 vLLM 加速推理（可选）
+### 7.2 Accelerate Inference with vLLM (Optional)
 
-当需要对大量 prompt 进行 rejection sampling 时，使用 vLLM 可以显著提速：
+Using vLLM significantly speeds up inference when rejection sampling is needed for many prompts:
 
 ```python
 """
-使用 vLLM 的批量推理（比 HuggingFace generate 快 5-10x）
-注意: vLLM 对 LoRA adapter 的支持需要 vLLM >= 0.4.0
+Batch Inference with vLLM (5-10x faster than HuggingFace generate)
+Note: vLLM LoRA adapter support requires vLLM >= 0.4.0
 """
 from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 
-# 加载模型（vLLM 方式）
+# Load Model (vLLM way)
 llm = LLM(
     model="Qwen/Qwen3-8B",
     enable_lora=True,
@@ -1096,42 +1098,42 @@ llm = LLM(
     gpu_memory_utilization=0.85,
 )
 
-# 配置采样参数
+# Configure Sampling Params
 sampling_params = SamplingParams(
     temperature=0.9,
     top_p=0.95,
     max_tokens=256,
-    n=16,  # 每个 prompt 生成 16 个候选
+    n=16,  # Generate 16 candidates per prompt
 )
 
-# 准备 LoRA adapter
+# Prepare LoRA adapter
 lora_request = LoRARequest("grpo_adapter", 1, "checkpoints/grpo/final")
 
-# 批量推理
-prompts = [...]  # prompt 列表
+# Batch Inference
+prompts = [...]  # List of prompts
 outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
 ```
 
 ---
 
-## 8. 评估方案
+## 8. Evaluation Scheme
 
-### 8.1 自动化指标（Tier 1 — 无需模型）
+### 8.1 Automated Metrics (Tier 1 — No Model Required)
 
-| 指标 | 适用子任务 | 计算方式 |
-|------|-----------|---------|
-| Constraint Satisfaction Rate | 关键词子任务 | 两个关键词是否都出现（精确匹配/模糊匹配） |
-| Format Compliance | 全部 | 单句/长度/非空检查 |
-| Degeneracy Rate | 全部 | 重复 n-gram 占比 |
-| Distinct-1 / Distinct-2 | 全部 | 生成文本的 unigram/bigram 多样性 |
+| Metric | Applicable Subtask | Calculation Method |
+|---|---|---|
+| Constraint Satisfaction Rate | Keyword Subtask | Whether both keywords appear (Exact/Fuzzy match) |
+| Format Compliance | All | Single sentence/Length/Non-empty check |
+| Degeneracy Rate | All | Percentage of repeated n-grams |
+| Distinct-1 / Distinct-2 | All | Unigram/Bigram diversity of generated text |
 
-### 8.2 LLM-as-Judge（Tier 2）
+### 8.2 LLM-as-Judge (Tier 2)
 
 ```python
 """
-LLM-as-Judge Pairwise 评估
+LLM-as-Judge Pairwise Evaluation
 
-对每个 prompt，比较 baseline（零样本基座）和 proposed（训练后模型）的输出
+Compare baseline (Zero-shot base) vs proposed (Trained model) outputs for each prompt
 """
 
 JUDGE_PROMPT_TEMPLATE = """You are an expert judge of humor quality.
@@ -1154,210 +1156,210 @@ Which response is funnier? Reply with ONLY "A" or "B" or "TIE".
 """
 ```
 
-### 8.3 人工评估（Tier 3）
+### 8.3 Human Evaluation (Tier 3)
 
-- 从测试集中随机抽取 20-40 个 prompt
-- 2-3 位评估者独立做 A/B 盲评
-- 报告与 LLM judge 的 agreement（Cohen's kappa）
+- Randomly sample 20-40 prompts from test set
+- 2-3 evaluators perform blind A/B testing independently
+- Report agreement with LLM judge (Cohen's kappa)
 
 ---
 
-## 9. 项目目录结构（建议）
+## 9. Project Directory Structure (Proposed)
 
 ```
 proj_2026_1/
-├── configs/                        # 训练配置文件
+├── configs/                        # Training Configs
 │   ├── sft_config.yaml
 │   └── grpo_config.yaml
 │
 ├── data/
-│   ├── semeval_task/               # SemEval 原始数据（已有）
+│   ├── semeval_task/               # SemEval Raw Data (Existing)
 │   │   ├── task-a-en.tsv
 │   │   ├── task-a-es.tsv
 │   │   └── task-a-zh.tsv
 │   ├── sft/
-│   │   ├── raw/                    # 原始数据集（已有）
+│   │   ├── raw/                    # Raw Datasets (Existing)
 │   │   │   ├── rjoke/
 │   │   │   ├── cfun/
 │   │   │   ├── haha/
 │   │   │   └── news_headlines.../
-│   │   └── preprocessed/           # 处理后的 SFT 数据
+│   │   └── preprocessed/           # Processed SFT Data
 │   │       ├── sft_train.jsonl
 │   │       └── sft_val.jsonl
 │   └── grpo/
-│       └── grpo_prompts.jsonl      # GRPO 训练用的 prompt 集合
+│       └── grpo_prompts.jsonl      # GRPO Training Prompts
 │
 ├── data_preprocessing/
-│   ├── visulization.ipynb          # 数据可视化（已有）
-│   ├── prepare_sft_data.py         # SFT 数据预处理脚本
-│   ├── prepare_grpo_prompts.py     # GRPO prompt 准备脚本
-│   └── synthesize_task_data.py     # 任务格式化数据合成脚本
+│   ├── visulization.ipynb          # Data Visualization (Existing)
+│   ├── prepare_sft_data.py         # SFT Data Prep Script
+│   ├── prepare_grpo_prompts.py     # GRPO Prompt Prep Script
+│   └── synthesize_task_data.py     # Task Formatted Data Synthesis Script
 │
 ├── scripts/
-│   ├── train_sft.py                # SFT 训练入口
-│   ├── train_grpo.py               # GRPO 训练入口
-│   └── inference.py                # 推理 + Rejection Sampling
+│   ├── train_sft.py                # SFT Training Entry
+│   ├── train_grpo.py               # GRPO Training Entry
+│   └── inference.py                # Inference + Rejection Sampling
 │
 ├── src/
 │   ├── __init__.py
-│   ├── rewards.py                  # Reward function 定义
-│   ├── data_utils.py               # 数据加载/处理工具
-│   └── eval_utils.py               # 评估工具
+│   ├── rewards.py                  # Reward Function Definition
+│   ├── data_utils.py               # Data Loading/Processing Utils
+│   └── eval_utils.py               # Evaluation Utils
 │
 ├── evaluation/
-│   ├── run_auto_eval.py            # 自动化指标评估
-│   ├── run_llm_judge.py            # LLM-as-Judge 评估
-│   └── analyze_results.py          # 结果分析与可视化
+│   ├── run_auto_eval.py            # Automated Metrics Eval
+│   ├── run_llm_judge.py            # LLM-as-Judge Eval
+│   └── analyze_results.py          # Results Analysis & Viz
 │
-├── checkpoints/                    # 模型检查点（已有）
+├── checkpoints/                    # Model Checkpoints (Existing)
 │   ├── sft/
 │   └── grpo/
 │
-├── utils/                          # 通用工具（已有）
+├── utils/                          # Common Utils (Existing)
 │
 ├── Dockerfile
 ├── docker_build.sh
 ├── docker_run.sh
 ├── requirements.txt
-├── TECHNICAL_ROADMAP.md            # 本文档
+├── TECHNICAL_ROADMAP.md            # This Document
 └── .gitignore
 ```
 
 ---
 
-## 10. 时间线与里程碑
+## 10. Timeline and Milestones
 
-### Week 1: 数据准备 + 环境搭建
+### Week 1: Data Prep + Environment Setup
 
-| 任务 | 预计耗时 | 交付物 |
-|------|---------|--------|
-| 环境搭建（Docker + 依赖） | 0.5 天 | 可运行的容器环境 |
-| 数据探索与可视化 | 1 天 | EDA notebook |
-| rJokes / CFun / HAHA 数据清洗 | 1 天 | 清洗后的通用幽默数据 |
-| 任务格式化数据合成 | 1.5 天 | 合成 SFT 数据 |
-| SFT 数据集构建 + 验证 | 1 天 | `sft_train.jsonl`, `sft_val.jsonl` |
+| Task | Est. Time | Deliverable |
+|---|---|---|
+| Environment Setup (Docker + Deps) | 0.5 Day | Runnable Container Environment |
+| Data Exploration & Visualization | 1 Day | EDA Notebook |
+| rJokes / CFun / HAHA Cleaning | 1 Day | Cleaned General Humor Data |
+| Task Formatted Data Synthesis | 1.5 Day | Synthesized SFT Data |
+| SFT Dataset Construction + Verification | 1 Day | `sft_train.jsonl`, `sft_val.jsonl` |
 
-### Week 2: SFT + GRPO 训练
+### Week 2: SFT + GRPO Training
 
-| 任务 | 预计耗时 | 交付物 |
-|------|---------|--------|
-| SFT 训练脚本编写 | 0.5 天 | `train_sft.py` |
-| SFT 训练 + 调参 | 1 天 | SFT checkpoint |
-| Reward function 实现 | 1 天 | `rewards.py` |
-| GRPO 训练脚本编写 | 0.5 天 | `train_grpo.py` |
-| GRPO Phase 1（纯规则 reward）| 1 天 | GRPO Phase 1 checkpoint |
-| GRPO Phase 2（加入幽默评分）| 1 天 | GRPO Phase 2 checkpoint |
+| Task | Est. Time | Deliverable |
+|---|---|---|
+| SFT Training Script Writing | 0.5 Day | `train_sft.py` |
+| SFT Training + Tuning | 1 Day | SFT Checkpoint |
+| Reward Function Implementation | 1 Day | `rewards.py` |
+| GRPO Training Script Writing | 0.5 Day | `train_grpo.py` |
+| GRPO Phase 1 (Pure Rule Reward) | 1 Day | GRPO Phase 1 Checkpoint |
+| GRPO Phase 2 (Add Humor Score) | 1 Day | GRPO Phase 2 Checkpoint |
 
-### Week 3: 评估 + 调优
+### Week 3: Evaluation + Tuning
 
-| 任务 | 预计耗时 | 交付物 |
-|------|---------|--------|
-| 推理 + Rejection Sampling 实现 | 0.5 天 | `inference.py` |
-| 自动化指标评估 | 0.5 天 | 指标报告 |
-| LLM-as-Judge 评估 | 1 天 | pairwise 胜率报告 |
-| 人工评估 | 1 天 | 人工评估报告 |
-| 模型调优迭代 | 2 天 | 最终模型 |
+| Task | Est. Time | Deliverable |
+|---|---|---|
+| Inference + Rejection Sampling | 0.5 Day | `inference.py` |
+| Automated Metrics Evaluation | 0.5 Day | Metrics Report |
+| LLM-as-Judge Evaluation | 1 Day | Pairwise Win-Rate Report |
+| Human Evaluation | 1 Day | Human Eval Report |
+| Model Tuning Iteration | 2 Days | Final Model |
 
-### Week 4: 报告 + 整理
+### Week 4: Report + Consolidation
 
-| 任务 | 预计耗时 | 交付物 |
-|------|---------|--------|
-| 代码整理 + 文档 | 1 天 | 整洁的代码仓库 |
-| 最终报告撰写 | 3-4 天 | 课程论文 |
+| Task | Est. Time | Deliverable |
+|---|---|---|
+| Code Cleanup + Documentation | 1 Day | Clean Code Repository |
+| Final Report Writing | 3-4 Days | Course Paper |
 
 ---
 
-## 附录 A: GRPO 数学原理
+## Appendix A: GRPO Mathematical Principles
 
-### A.1 目标函数
+### A.1 Objective Function
 
-GRPO 的策略梯度目标函数：
+GRPO Policy Gradient Objective Function:
 
 $$
 \mathcal{J}_{\text{GRPO}}(\theta) = \mathbb{E}_{x \sim \mathcal{D},\, \{y_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot|x)} \left[ \frac{1}{G} \sum_{i=1}^{G} \min\left( \frac{\pi_\theta(y_i|x)}{\pi_{\theta_{\text{old}}}(y_i|x)} \hat{A}_i,\; \text{clip}\left(\frac{\pi_\theta(y_i|x)}{\pi_{\theta_{\text{old}}}(y_i|x)}, 1-\epsilon, 1+\epsilon\right) \hat{A}_i \right) \right]
 $$
 
-其中 $\hat{A}_i$ 是组内相对优势：
+Where $\hat{A}_i$ is the group-relative advantage:
 
 $$
 \hat{A}_i = \frac{r_i - \mu_G}{\sigma_G + \epsilon}, \quad \mu_G = \frac{1}{G}\sum_{j=1}^G r_j, \quad \sigma_G = \sqrt{\frac{1}{G}\sum_{j=1}^G (r_j - \mu_G)^2}
 $$
 
-### A.2 KL 散度正则化
+### A.2 KL Divergence Regularization
 
-为防止策略偏离参考模型（SFT 模型）过远，加入 KL 惩罚：
+To prevent policy from deviating too far from the reference model (SFT model), KL penalty is added:
 
 $$
 \mathcal{L}_{\text{total}} = -\mathcal{J}_{\text{GRPO}}(\theta) + \beta \cdot \mathbb{E}_{x}\left[D_{\text{KL}}\left(\pi_\theta(\cdot|x) \| \pi_{\text{ref}}(\cdot|x)\right)\right]
 $$
 
-$\beta$ 控制 KL 惩罚的强度：
-- $\beta$ 太大 → 策略几乎不更新，等于没训
-- $\beta$ 太小 → 策略更新过猛，可能出现 reward hacking
+$\beta$ controls the strength of KL penalty:
+- $\beta$ too large → Policy barely updates, equivalent to no training
+- $\beta$ too small → Policy updates too aggressively, possibly leading to reward hacking
 
-### A.3 与 PPO 的对比
+### A.3 Comparison with PPO
 
-| 特性 | PPO | GRPO |
-|------|-----|------|
-| Value Model | 需要（额外训练 Critic） | **不需要** |
-| Advantage 估计 | GAE（需要 value function） | **组内归一化**（无需 value function） |
-| 显存占用 | 高（policy + value + ref 三个模型） | 低（policy + ref 两个模型） |
-| 训练稳定性 | 需要仔细平衡 actor/critic | 相对更稳定 |
-| 适用场景 | 通用 RL | 特别适合有规则化 reward 的场景 |
+| Feature | PPO | GRPO |
+|---|---|---|
+| Value Model | Required (Extra Critic training) | **Not Required** |
+| Advantage Estimation | GAE (Requires value function) | **Group Normalization** (No value function needed) |
+| VRAM Usage | High (Policy + Value + Ref models) | Low (Policy + Ref models) |
+| Training Stability | Requires balancing Actor/Critic | Relatively more stable |
+| Usage Scenario | General RL | Especially suitable for scenarios with rule-based rewards |
 
 ---
 
-## 附录 B: 常见问题与调参建议
+## Appendix B: FAQ and Hyperparameter Tuning Suggestions
 
-### B.1 GRPO 训练 reward 不增长
+### B.1 GRPO Training Reward Not Increasing
 
-**可能原因与解决方案:**
+**Possible Causes and Solutions:**
 
-| 症状 | 原因 | 解决 |
-|------|------|------|
-| reward 完全不动 | 学习率太小 | 增大 lr (如 5e-6 → 1e-5) |
-| reward 不动 | beta 太大 | 减小 beta (如 0.1 → 0.04) |
-| reward 不动 | reward function 区分度不够 | 检查生成的回复是否全部得到相似分数 |
-| reward 不动 | SFT 模型太差 | 检查 SFT 模型生成质量，可能需要更多/更好的 SFT 数据 |
+| Symptom | Cause | Solution |
+|---|---|---|
+| Reward completely flat | LR too small | Increase LR (e.g., 5e-6 → 1e-5) |
+| Reward flat | Beta too large | Decrease beta (e.g., 0.1 → 0.04) |
+| Reward flat | Reward function not distinctive | Check if generated responses all get similar scores |
+| Reward flat | SFT model too poor | Check SFT generation quality, might need more/better SFT data |
 
 ### B.2 Reward Hacking
 
-**症状**: reward 快速上升但生成质量下降（模型找到了 reward function 的漏洞）
+**Symptom**: Reward rises quickly but generation quality drops (Model finds loophole in reward function)
 
-**常见案例与对策:**
-- **模型重复关键词**: 如 "penguin penguin penguin bankruptcy" → 在 `reward_format` 中加入更强的重复惩罚
-- **模型生成超长文本**: → 在 reward 中加入长度惩罚
-- **模型输出不像笑话**: → 增大 beta 限制偏离 SFT 策略，或引入 humor reward
+**Common Cases and Countermeasures:**
+- **Model repeats keywords**: e.g., "penguin penguin penguin bankruptcy" → Add stronger repetition penalty in `reward_format`
+- **Model generates extremely long text**: → Add length penalty in reward
+- **Model output not like a joke**: → Increase beta to constrain deviation from SFT policy, or introduce humor reward
 
-### B.3 显存不足 (OOM)
+### B.3 Out of Memory (OOM)
 
-**GRPO 阶段比 SFT 更容易 OOM**，因为需要同时处理一组回复。调整顺序：
+**GRPO stage is more prone to OOM than SFT** because it processes a group of responses simultaneously. Tuning order:
 
-1. 减小 `num_generations` (如 8 → 4)
-2. 减小 `per_device_train_batch_size` (如 2 → 1)
-3. 增大 `gradient_accumulation_steps` 补偿
-4. 减小 `max_completion_length`
-5. 启用 gradient checkpointing (`gradient_checkpointing=True`)
-6. 使用 QLoRA (4-bit 量化) 替代 LoRA
+1. Decrease `num_generations` (e.g., 8 → 4)
+2. Decrease `per_device_train_batch_size` (e.g., 2 → 1)
+3. Increase `gradient_accumulation_steps` to compensate
+4. Decrease `max_completion_length`
+5. Enable gradient checkpointing (`gradient_checkpointing=True`)
+6. Use QLoRA (4-bit quantization) instead of LoRA
 
-### B.4 Qwen3 Thinking Mode 处理
+### B.4 Qwen3 Thinking Mode Handling
 
-Qwen3 的 thinking mode 会在回复中生成 `<think>...</think>` 标签。对于幽默生成，**必须关闭**：
+Qwen3 thinking mode generates `<think>...</think>` tags in response. For humor generation, **must disable**:
 
 ```python
-# 方法 1: 在 chat template 中关闭
+# Method 1: Disable in chat template
 text = tokenizer.apply_chat_template(
     messages,
     tokenize=False,
     add_generation_prompt=True,
-    enable_thinking=False,   # 关闭 thinking mode
+    enable_thinking=False,   # Disable thinking mode
 )
 
-# 方法 2: 在 system prompt 中指定
+# Method 2: Specify in system prompt
 messages = [
     {"role": "system", "content": "/no_think"},
     {"role": "user", "content": "your prompt here"},
 ]
 ```
 
-在 SFT 数据和 GRPO prompt 构造中，**统一使用 `/no_think` system prompt** 以保持一致性。
+In SFT data and GRPO prompt construction, **uniformly use `/no_think` system prompt** to maintain consistency.
