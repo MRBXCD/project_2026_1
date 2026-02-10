@@ -1,0 +1,42 @@
+# --- 深度学习核心框架 ---
+torch==2.5.1
+torchvision
+torchaudio
+
+# --- 大模型训练与微调 (Hugging Face 生态) ---
+transformers>=4.45.0
+accelerate>=1.0.0
+peft
+trl
+datasets
+safetensors
+tokenizers
+
+# --- 模型压缩与优化 ---
+bitsandbytes
+einops
+
+# --- 评估与基准测试 ---
+lighteval
+evaluate
+scikit-learn
+sacrebleu
+rouge_score
+
+# --- 数据处理与合成 ---
+pandas
+numpy
+google-genai
+sentencepiece
+tiktoken
+
+# --- 实验监控与管理 ---
+wandb
+tqdm
+python-dotenv
+
+# --- 交互式开发与工具 ---
+jupyterlab
+ipywidgets
+matplotlib
+seaborn

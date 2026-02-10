@@ -7,5 +7,5 @@ docker run -it -d \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   -v $(pwd):/workspace \
-  -p 8888:8888 \
+  -p 127.0.0.1:8080:80 \
   llm-dev-env:v1

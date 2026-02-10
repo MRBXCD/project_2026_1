@@ -163,23 +163,25 @@ def build_lora_config(rank: int = 64, alpha: int = 128) -> LoraConfig:
 # ============================================================
 
 def build_training_args(
-    lora_config: LoraConfig,
     epochs: int = 3,
     batch_size: int = 4,
     grad_accum: int = 4,
     learning_rate: float = 2e-4,
-    max_seq_length: int = 512,
+    max_length: int = 512,
     report_to: str = "wandb",
 ) -> SFTConfig:
     """构建 SFT 训练配置。
 
+    注意: peft_config (LoRA) 不在这里传入，而是传给 SFTTrainer 构造函数。
+    这是因为最新版 TRL 中 SFTConfig 继承自 TrainingArguments，
+    不接受 peft_config 参数；peft_config 是 SFTTrainer 级别的参数。
+
     Args:
-        lora_config: LoRA 配置 (会传给 SFTConfig.peft_config)
         epochs: 训练轮数。笑话数据量不大 (~50K)，3 轮通常够用。
         batch_size: 每 GPU 的 batch size。
         grad_accum: 梯度累积步数。有效 batch = batch_size * grad_accum。
         learning_rate: LoRA 学习率。通常比全量微调大 (2e-4 vs 2e-5)。
-        max_seq_length: 最大序列长度。笑话通常短，512 足够。
+        max_length: 最大序列长度。笑话通常短，512 足够。
         report_to: 实验追踪工具 ("wandb" / "tensorboard" / "none")。
 
     Returns:
@@ -203,8 +205,12 @@ def build_training_args(
         # --- 精度 ---
         bf16=True,
 
-        # --- 序列长度 ---
-        max_seq_length=max_seq_length,
+        # --- 序列长度 + Packing ---
+        max_length=max_length,
+        # Packing: 将多条短文本拼接成一条 max_length 的序列，消除 padding 浪费。
+        # 笑话通常 50-200 tokens，不 pack 的话 512 长度中大半是 padding。
+        # 开启后 GPU 利用率会显著提升。
+        packing=True,
 
         # --- 日志与保存 ---
         logging_steps=10,
@@ -217,10 +223,13 @@ def build_training_args(
         metric_for_best_model="eval_loss",
 
         # --- 优化 ---
-        gradient_checkpointing=True,        # 用时间换显存，8B 模型建议开启
+        # gradient_checkpointing: 用时间换显存。
+        # H100 80GB + LoRA 显存充裕，关闭以提升训练速度。
+        # 如果增大 batch_size 后 OOM，再改回 True。
+        gradient_checkpointing=False,
 
-        # --- PEFT ---
-        peft_config=lora_config,
+        # 数据加载并行: 默认为 0 (单进程)，增大可减少 CPU 瓶颈
+        dataloader_num_workers=4,
 
         # --- 其他 ---
         report_to=report_to,
@@ -239,15 +248,15 @@ def main():
                         help="基座模型名称或路径")
     parser.add_argument("--epochs", type=int, default=3,
                         help="训练轮数 (默认 3)")
-    parser.add_argument("--batch_size", type=int, default=4,
-                        help="每 GPU batch size (默认 4)")
-    parser.add_argument("--grad_accum", type=int, default=4,
-                        help="梯度累积步数 (默认 4)")
+    parser.add_argument("--batch_size", type=int, default=8,
+                        help="每 GPU batch size (默认 16，H100 80GB 可支持)")
+    parser.add_argument("--grad_accum", type=int, default=1,
+                        help="梯度累积步数 (默认 1，batch_size 已经够大)")
     parser.add_argument("--lr", type=float, default=2e-4,
                         help="学习率 (默认 2e-4)")
     parser.add_argument("--lora_rank", type=int, default=64,
                         help="LoRA 秩 (默认 64)")
-    parser.add_argument("--max_seq_length", type=int, default=512,
+    parser.add_argument("--max_length", type=int, default=512,
                         help="最大序列长度 (默认 512)")
     parser.add_argument("--report_to", type=str, default="wandb",
                         choices=["wandb", "tensorboard", "none"],
@@ -277,16 +286,16 @@ def main():
     print("Step 4: 配置训练参数")
     print("=" * 60)
     training_args = build_training_args(
-        lora_config=lora_config,
         epochs=args.epochs,
         batch_size=args.batch_size,
         grad_accum=args.grad_accum,
         learning_rate=args.lr,
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_length,
         report_to=args.report_to,
     )
 
     # 5. 创建 SFTTrainer 并启动训练
+    #    注意: peft_config 传给 SFTTrainer (不是 SFTConfig)
     print("\n" + "=" * 60)
     print("Step 5: 开始训练")
     print("=" * 60)
@@ -296,6 +305,7 @@ def main():
         train_dataset=dataset["train"],
         eval_dataset=dataset.get("validation"),
         processing_class=tokenizer,
+        peft_config=lora_config,
     )
 
     trainer.train()
