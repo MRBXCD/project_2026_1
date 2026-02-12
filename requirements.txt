@@ -35,3 +35,4 @@ jupyterlab
 ipywidgets
 matplotlib
 seaborn
+emoji

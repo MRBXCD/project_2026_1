@@ -5,7 +5,7 @@ if [ -n "$HF_USERNAME" ]; then
     cd $project_path
     echo '  下载 SFT adapter...'
     mkdir -p $project_path/checkpoints/sft/final
-    huggingface-cli download ${HF_USERNAME}/humor-sft-qwen3-8b \
+    hf download ${HF_USERNAME}/humor-sft-qwen3-8b \
         --local-dir $project_path/checkpoints/sft/final
 
 else

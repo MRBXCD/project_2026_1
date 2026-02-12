@@ -308,10 +308,9 @@ def run_benchmark_eval(model_name: str, adapter_path: str, tasks: str = "leaderb
     base_output_dir = str(EVAL_OUTPUT_DIR / "benchmark_base")
     base_cmd = [
         sys.executable, "-m", "lighteval", "accelerate",
-        "--model_args", f"pretrained={model_name},dtype=bfloat16",
-        "--tasks", tasks,
-        "--output_dir", base_output_dir,
-        "--override_batch_size", "4",
+        f"model_name={model_name},dtype=bfloat16,device=cuda,batch_size=4,trust_remote_code=True",
+        tasks,
+        "--output-dir", base_output_dir,
     ]
     print(f"  命令: {' '.join(base_cmd)}")
     subprocess.run(base_cmd, check=True)
@@ -342,10 +341,9 @@ def run_benchmark_eval(model_name: str, adapter_path: str, tasks: str = "leaderb
     sft_output_dir = str(EVAL_OUTPUT_DIR / "benchmark_sft")
     sft_cmd = [
         sys.executable, "-m", "lighteval", "accelerate",
-        "--model_args", f"pretrained={merged_dir},dtype=bfloat16",
-        "--tasks", tasks,
-        "--output_dir", sft_output_dir,
-        "--override_batch_size", "4",
+        f"model_name={merged_dir},dtype=bfloat16,device=cuda,batch_size=4,trust_remote_code=True",
+        tasks,
+        "--output-dir", sft_output_dir,
     ]
     print(f"  命令: {' '.join(sft_cmd)}")
     subprocess.run(sft_cmd, check=True)

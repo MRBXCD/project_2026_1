@@ -1,0 +1,364 @@
+{
+  "metrics": {
+    "base": {
+      "total": 40,
+      "format_pass_rate": 1.0,
+      "avg_length": 101.35,
+      "min_length": 46,
+      "max_length": 179,
+      "keyword_satisfaction_rate": 1.0,
+      "keyword_total": 20
+    },
+    "sft": {
+      "total": 40,
+      "format_pass_rate": 0.975,
+      "avg_length": 139.8,
+      "min_length": 69,
+      "max_length": 961,
+      "keyword_satisfaction_rate": 0.95,
+      "keyword_total": 20
+    }
+  },
+  "samples": [
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Panamanian lawmakers’ Taiwan trip sparks diplomatic row with China\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Panamanian lawmakers’ Taiwan trip sparks diplomatic row with China",
+      "keywords": [],
+      "base_response": "Panamanian lawmakers visited Taiwan, and China said, \"That’s it, I’m calling the whole thing off—no more tea, no more talks, just a cold, hard reset.\"",
+      "sft_response": "I guess China finally realized that if you want to annoy them, you don't need to visit their embassy; just visit their bank."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Carra: Liverpool must sign in January - even after summer spending spree\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Carra: Liverpool must sign in January - even after summer spending spree",
+      "keywords": [],
+      "base_response": "Liverpool's new strategy: spend all summer, then panic in January like it's the first day of a budget.",
+      "sft_response": "I guess when Liverpool runs out of money, they start using it on things like \"Carra\" and \"spending.\""
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Experts warn of health threat posed by ultra-processed foods\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Experts warn of health threat posed by ultra-processed foods",
+      "keywords": [],
+      "base_response": "Experts say we should eat less of that \"processed\" food — I mean, who knew your salad was actually a science experiment?",
+      "sft_response": "I guess the health experts are finally catching up to the food industry’s long-held belief that the only thing that can kill you is a slow, drawn-out death by heart disease."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Dick Cheney funeral: George W. Bush delivers eulogy\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Dick Cheney funeral: George W. Bush delivers eulogy",
+      "keywords": [],
+      "base_response": "George W. Bush delivered the eulogy — and finally, someone remembered to bring the flag.",
+      "sft_response": "I haven't seen this many hushed gasps and awkward \"um...yeah, he did...\" moments since I accidentally walked into a room with my dick out."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"No place for Mostert distraction in South Africa team\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "No place for Mostert distraction in South Africa team",
+      "keywords": [],
+      "base_response": "Mostert may be a distraction, but in South Africa, even distractions have a place — just not in the team's lineup.",
+      "sft_response": "I guess \"distraction\" is a bit of a sensitive word in South Africa, considering the last time someone tried to ignore it, the entire country got a new name."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Meet Troy - the parrot named after Ireland’s hat-trick hero\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Meet Troy - the parrot named after Ireland’s hat-trick hero",
+      "keywords": [],
+      "base_response": "Troy the parrot may not have scored a hat-trick, but he's got the Irish flair for repeating the same three words over and over.",
+      "sft_response": "I guess the team decided that instead of looking for a hat-trick hero, they just wanted someone who could mimic the Irish national anthem."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Instagram to start closing Australian teen accounts ahead of social media ban\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Instagram to start closing Australian teen accounts ahead of social media ban",
+      "keywords": [],
+      "base_response": "Instagram is finally banning teens—just in time to stop them from posting selfies of their *actual* lives.",
+      "sft_response": "Instagram is finally taking steps to ensure that teenagers are too busy scrolling to notice if they’re still under the legal age to be parents."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"How the EU botched its attempt to regulate AI\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "How the EU botched its attempt to regulate AI",
+      "keywords": [],
+      "base_response": "The EU tried to regulate AI, and now the only thing running on autopilot is their budget.",
+      "sft_response": "I guess the EU finally found a way to make an algorithm more \"European\" than an Italian mafia boss."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"I stayed at one of only two hotels in Malta’s Silent City\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "I stayed at one of only two hotels in Malta’s Silent City",
+      "keywords": [],
+      "base_response": "I stayed at one of only two hotels in Malta’s Silent City — turns out, silence really *is* golden… and the Wi-Fi’s worse than the echo.",
+      "sft_response": "I stayed in a hotel in Malta’s Silent City, which is impressive because I’ve never actually seen anyone try to book a hotel there."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Ireland coach Farrell brings back Bundee Aki for clash with Springboks in Dublin\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Ireland coach Farrell brings back Bundee Aki for clash with Springboks in Dublin",
+      "keywords": [],
+      "base_response": "Farrell brings back Bundee Aki — because if the Springboks think they’re in for a fight, they’ve clearly never met a rugby player with a name that sounds like a superhero villain.",
+      "sft_response": "I guess Farrell figured if the Springboks were going to make it to Dublin, the only way to stop them was to bring back the guy who last made them leave."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Is it okay if I don’t love my partner all the time?\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Is it okay if I don’t love my partner all the time?",
+      "keywords": [],
+      "base_response": "Sure, here's a humorous one-liner inspired by the headline:\n\n\"Love is like a Wi-Fi signal — it’s great when it’s strong, but sometimes you just need to let it buffer.\"",
+      "sft_response": "I asked my wife if it was okay to not love her all the time, and she said, \"Yeah, but only when you're sleeping.\""
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Why footballer Troy Parrott is taking the classic Hero's Journey\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Why footballer Troy Parrott is taking the classic Hero's Journey",
+      "keywords": [],
+      "base_response": "Troy Parrott's on a Hero's Journey — just don't ask him where the \"Achilles' heel\" is.",
+      "sft_response": "I guess the Hero's Journey is less about football and more about finding a better place to cry in the bathroom."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Gen Z are flocking to these unconventional jobs in order to earn big - and it's working\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Gen Z are flocking to these unconventional jobs in order to earn big - and it's working",
+      "keywords": [],
+      "base_response": "Gen Z isn't just chasing trends—they're chasing cash, one quirky job at a time.",
+      "sft_response": "I asked a Gen Z friend what he does for a living, and he said he’s a “professional Instagram influencer.” I told him he’s just a glorified selfie stick, but he replied, “No, I’m a ‘professional Instagram influencer.’” I said, “Yeah, but that doesn’t mean you’re actually making money, it just means you’re a glorified selfie stick.” He said, “I’m also a professional TikTok dancer and a YouTuber.” I said, “I don’t know what you’re talking about.” He said, “I’m also a professional TikTok dancer and a YouTuber.” I said, “I don’t know what you’re talking about.” He said, “I’m also a professional TikTok dancer and a YouTuber.” I said, “I don’t know what you’re talking about.” He said, “I’m also a professional TikTok dancer and a YouTuber.” I said, “I don’t know what you’re talking about.” He said, “I’m also a professional TikTok dancer and a YouTuber.” I said, “I don’t know what you’re talking about.” He said, “I’m also a professional TikTok dancer and a"
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"‘Kim Kardashian had no pretensions that she was a great actress’: Glenn Close hits back at zero-star All’s Fair reviews\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "‘Kim Kardashian had no pretensions that she was a great actress’: Glenn Close hits back at zero-star All’s Fair reviews",
+      "keywords": [],
+      "base_response": "Glenn Close just told Kim Kardashian she’s not an actress — but maybe she’s better at playing the part of the person who thinks she’s an actress.",
+      "sft_response": "Glenn Close saying Kim has no pretensions is a lot like a vegan saying meat is just a \"dry cough.\""
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Fiber is something most people could use more of. But experts advise caution with ‘fibermaxxing’\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Fiber is something most people could use more of. But experts advise caution with ‘fibermaxxing’",
+      "keywords": [],
+      "base_response": "Trying to \"fibermaxx\" your diet is like trying to max out a credit card — it's great in theory, but the bill comes due in your digestive system.",
+      "sft_response": "I finally maxed out my fiber intake, and now my doctor says I’m officially being fed up."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Host Brazil pushes for progress on big issues at COP30 and some see cause for optimism\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Host Brazil pushes for progress on big issues at COP30 and some see cause for optimism",
+      "keywords": [],
+      "base_response": "Brazil is finally using its hosting powers for good—well, at least for a few more weeks.",
+      "sft_response": "I haven't seen this much enthusiasm for a \"host\" since the last time someone tried to get Brazil to stop hosting football."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Oneohtrix Point Never: Tranquilizer review – uncanny ambient music for an agitated era\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Oneohtrix Point Never: Tranquilizer review – uncanny ambient music for an agitated era",
+      "keywords": [],
+      "base_response": "Oneohtrix Point Never's new album is the only thing keeping me calm in this agitated era—along with a tranquilizer dart and a therapist.",
+      "sft_response": "I haven't been this agitated by ambient music since the last time I tried to turn off a smart speaker with the voice command \"Hey Google, turn off the light.\""
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Advice from Whitty and Vallance on delaying lockdown 'had no grounding in science'\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Advice from Whitty and Vallance on delaying lockdown 'had no grounding in science'",
+      "keywords": [],
+      "base_response": "Whitty and Vallance's lockdown advice was so scientifically grounded, it’s still stuck in the 18th century.",
+      "sft_response": "I guess when they say lockdowns are \"grounded in science,\" they mean the floor is made of concrete."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"Gaelic games in action at Asian Youth Championing in Hanoi, Vietnam\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "Gaelic games in action at Asian Youth Championing in Hanoi, Vietnam",
+      "keywords": [],
+      "base_response": "Gaelic games in Hanoi? I guess the only thing more unexpected than a hurling match in Vietnam is a Vietnamese hurler.",
+      "sft_response": "I haven't seen Gaelic football that fast since the last time my sister tried to leave the house."
+    },
+    {
+      "prompt": "You are a witty comedian. Given the following news headline, write a short, funny one-liner joke inspired by it.\n\nHeadline: \"I made mistakes on TV, he made his on a field'\"\n\nWrite a humorous one-liner inspired by the headline. Please give me the joke only, no other text.",
+      "headline": "I made mistakes on TV, he made his on a field'",
+      "keywords": [],
+      "base_response": "\"I made mistakes on TV, he made his on a field — and I still got better coverage.\"",
+      "sft_response": "I guess on TV, you’re allowed to mess up, but in the real world, you’re expected to “make a field.”"
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'hammer' and 'flower'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "hammer",
+        "flower"
+      ],
+      "base_response": "I tried to grow a flower with a hammer—turns out it's a tough bloom to nail.",
+      "sft_response": "I tried to give my girlfriend a flower, but she just said I needed to learn how to use a hammer first."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'drill' and 'pumpkin'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "drill",
+        "pumpkin"
+      ],
+      "base_response": "I tried to drill a hole in my pumpkin, but it turned into a pump-kin drill.",
+      "sft_response": "I tried to carve a drill into a pumpkin, but it just ended up being a really expensive jack-o'-lantern."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'hammer' and 'laptop'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "hammer",
+        "laptop"
+      ],
+      "base_response": "I tried to build a laptop with a hammer... it's a work in progress, and my fingers are the only thing running on batteries.",
+      "sft_response": "I tried to use my hammer to fix my laptop, but it turns out my real issue was just a flat battery and a need for more space on the desktop."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'spray' and 'fridge'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "spray",
+        "fridge"
+      ],
+      "base_response": "I tried to spray my fridge with air freshener, but it just gave me a cold, minty stare.",
+      "sft_response": "I tried to use a spray can as a doorstop, but it just ended up making the fridge door feel even more like a vacuum."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'deseed' and 'pepper'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "deseed",
+        "pepper"
+      ],
+      "base_response": "I tried to deseed the pepper, but it just gave me a spicy middle finger.",
+      "sft_response": "I tried to deseed my chili, but it just made it more pepper-annoying."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'drill' and 'laptop'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "drill",
+        "laptop"
+      ],
+      "base_response": "I tried to drill a hole in my laptop to find the power button, but now it's just a hole in my budget.",
+      "sft_response": "I tried to use my laptop as a power drill, but it just keeps freezing because it can't handle the bit."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'spray' and 'banana'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "spray",
+        "banana"
+      ],
+      "base_response": "I tried to spray paint my banana, but it just peeled away.",
+      "sft_response": "I tried to use a banana as a hair spray, but it just ended up making me look like a human fruit fly."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'spray' and 'pumpkin'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "spray",
+        "pumpkin"
+      ],
+      "base_response": "I tried to spray my pumpkin with perfume, but it just turned into a spooky pumpkin-scented fog.",
+      "sft_response": "I tried to carve a face into my pumpkin, but I ended up just spraying it with deodorant because my carving tools were all out of commission."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'roll' and 'shirt'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "roll",
+        "shirt"
+      ],
+      "base_response": "I tried to roll my shirt like a sushi roll, but it ended up looking more like a wrinkled burrito.",
+      "sft_response": "I tried to do a yoga pose where you have to roll your shirt up into a ball, but it ended in a very tight, very awkward conversation with my personal trainer."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'wash' and 'laptop'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "wash",
+        "laptop"
+      ],
+      "base_response": "I tried to wash my laptop, but it just kept saying \"Error 404: Not Found.\"",
+      "sft_response": "I tried to wash my laptop with dish soap, but I just ended up with a screen that says \"Error: Please unplug this device before washing.\""
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'roll' and 'banana'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "roll",
+        "banana"
+      ],
+      "base_response": "I tried to roll the banana, but it just slipped out of my hands—turns out, it's a slippery situation.",
+      "sft_response": "I tried to do a yoga pose where I roll up like a banana, but it ended up just being a very long and messy trip to the kitchen."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'shake' and 'clothe'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "shake",
+        "clothe"
+      ],
+      "base_response": "I tried to shake off the cold, but all I managed to do was shake my clothes like a dog.",
+      "sft_response": "I tried shaking off my rain jacket, but it just made my dry-clothed butt even more obvious."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'measure' and 'hair'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "measure",
+        "hair"
+      ],
+      "base_response": "I tried to measure my hair, but it just kept growing — I guess I need a better tool.",
+      "sft_response": "I tried to measure my hair by the yard, but I just ended up with a really long yard sale."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'cut' and 'chair'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "cut",
+        "chair"
+      ],
+      "base_response": "I tried to cut the chair, but it was more of a *cut* than a chair.",
+      "sft_response": "I tried to build a chair using only a single cut of wood, but it turned out to be a very unstable stool."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'wash' and 'bicycle'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "wash",
+        "bicycle"
+      ],
+      "base_response": "I tried to wash my bicycle, but it just kept pedaling away.",
+      "sft_response": "I tried to wash my bicycle, but it turns out it’s much harder to clean a bike when you’re trying to avoid getting a fresh start."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'blend' and 'shoes'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "blend",
+        "shoes"
+      ],
+      "base_response": "I tried to blend in at the party, but my shoes were too loud — I guess I’m just a walking sound effect.",
+      "sft_response": "I tried to blend my shoes into the background, but it turns out my feet have a very strong personal brand."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'move' and 'towel'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "move",
+        "towel"
+      ],
+      "base_response": "I told my towel to move, and it just dried up.",
+      "sft_response": "I tried to organize a party for my bald friend, but it was a total disaster because he kept insisting we all move out of his house to get a dry towel."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'spray' and 'laptop'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "spray",
+        "laptop"
+      ],
+      "base_response": "I tried to spray my laptop with water to clean it... turns out it's not a waterproof device, just a really bad roommate.",
+      "sft_response": "I tried to use my laptop as a car windshield, but I had to stop because the spray from the wipers kept making it hard to see."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'drill' and 'book'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "drill",
+        "book"
+      ],
+      "base_response": "I tried to drill my way through the book, but all I found was a hole in my patience.",
+      "sft_response": "I asked my librarian if I could borrow a drill, but she said she only had a book on boring topics."
+    },
+    {
+      "prompt": "You are a witty comedian. Write a short, funny one-liner joke that naturally includes both of the following words: 'spray' and 'keyboard'.\n\nWrite a humorous one-liner that contains both required words. Please give me the joke only, no other text.",
+      "headline": "",
+      "keywords": [
+        "spray",
+        "keyboard"
+      ],
+      "base_response": "I tried to clean my keyboard with a spray, but now it's just a wet, squishy keyboard.",
+      "sft_response": "I tried to use a spray can to clean my keyboard, but it turns out \"spray and pray\" is a lot easier on the fingers."
+    }
+  ]
+}
