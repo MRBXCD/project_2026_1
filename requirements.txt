@@ -1,8 +1,3 @@
-# --- 深度学习核心框架 ---
-torch==2.5.1
-torchvision
-torchaudio
-
 # --- 大模型训练与微调 (Hugging Face 生态) ---
 transformers>=4.45.0
 accelerate>=1.0.0
