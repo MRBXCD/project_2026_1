@@ -10,7 +10,7 @@ SFT 模型评估脚本
    - 输出人眼可读的对比表格并保存为 JSON
 
 2. 通用能力回归测试 (--mode benchmark)
-   - 使用 lighteval 运行标准 benchmark (MMLU, ARC 等)
+   - 使用 lm-evaluation-harness 运行标准 benchmark (MMLU, ARC 等)
    - 对比 base 模型和 SFT 模型的分数
 
 用法:
@@ -20,7 +20,7 @@ SFT 模型评估脚本
 
 依赖:
     - transformers, peft, torch
-    - lighteval (pip install lighteval[accelerate])
+    - lm-eval (pip install lm-eval)
 """
 
 import argparse
@@ -287,71 +287,125 @@ def run_generation_eval(model_name: str, adapter_path: str, n_samples: int = 20)
 
 
 # ============================================================
-# 评估 2: 通用能力回归测试 (lighteval)
+# 评估 2: 通用能力回归测试 (lm-evaluation-harness)
 # ============================================================
 
-def run_benchmark_eval(model_name: str, adapter_path: str, tasks: str = "leaderboard|mmlu|5|1"):
-    """使用 lighteval 运行标准 benchmark。
+def run_lm_eval(
+    model_args: str,
+    tasks: str,
+    output_dir: str,
+    num_fewshot: int,
+    batch_size: str,
+    device: str,
+    limit: str | None = None,
+):
+    """Run lm-evaluation-harness CLI with shared arguments."""
+    cmd = [
+        sys.executable, "-m", "lm_eval",
+        "--model", "hf",
+        "--model_args", model_args,
+        "--tasks", tasks,
+        "--num_fewshot", str(num_fewshot),
+        "--batch_size", str(batch_size),
+        "--device", device,
+        "--output_path", output_dir,
+    ]
+    if limit is not None:
+        cmd.extend(["--limit", str(limit)])
 
-    分别评估 base 模型和 SFT 模型 (合并 adapter 后评估)。
+    print(f"  命令: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+
+
+def run_benchmark_eval(
+    model_name: str,
+    adapter_path: str,
+    tasks: str = "mmlu",
+    num_fewshot: int = 5,
+    batch_size: str = "4",
+    device: str = "cuda:0",
+    sft_eval_mode: str = "peft",
+    limit: str | None = None,
+):
+    """使用 lm-evaluation-harness 运行标准 benchmark。
+
+    分别评估 base 模型和 SFT 模型，SFT 默认使用 PEFT adapter 直评。
 
     Args:
         model_name: 基座模型名
         adapter_path: SFT LoRA adapter 路径
-        tasks: lighteval 任务格式 "suite|task|num_few_shot|truncate_few_shot"
-               常用: leaderboard|mmlu|5|1, leaderboard|arc:challenge|25|1
+        tasks: lm-eval 任务名，逗号分隔，例如 "mmlu,arc_challenge"
+        num_fewshot: few-shot 样本数
+        batch_size: lm-eval batch size，支持数字或 "auto"/"auto:N"
+        device: 设备，例如 "cuda:0"
+        sft_eval_mode: "peft" 或 "merge"
+        limit: 可选，限制评估样本数（用于冒烟测试）
     """
     EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # --- 评估 Base 模型 ---
     print("\n--- 评估 Base 模型 ---")
     base_output_dir = str(EVAL_OUTPUT_DIR / "benchmark_base")
-    base_cmd = [
-        sys.executable, "-m", "lighteval", "accelerate",
-        f"model_name={model_name},dtype=bfloat16,device=cuda,batch_size=4,trust_remote_code=True",
-        tasks,
-        "--output-dir", base_output_dir,
-    ]
-    print(f"  命令: {' '.join(base_cmd)}")
-    subprocess.run(base_cmd, check=True)
-
-    # --- 合并 SFT adapter 到临时目录，然后评估 ---
-    print("\n--- 合并 SFT adapter ---")
-    merged_dir = EVAL_OUTPUT_DIR / "merged_sft_model"
-
-    if not merged_dir.exists():
-        print(f"  合并 adapter 到: {merged_dir}")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16, device_map="cpu"
-        )
-        model = PeftModel.from_pretrained(model, str(adapter_path))
-        model = model.merge_and_unload()
-
-        model.save_pretrained(str(merged_dir))
-        tokenizer.save_pretrained(str(merged_dir))
-        del model, tokenizer
-        gc.collect()
-        print("  合并完成")
-    else:
-        print(f"  已存在合并模型: {merged_dir}，跳过合并")
+    base_model_args = (
+        f"pretrained={model_name},dtype=bfloat16,trust_remote_code=True"
+    )
+    run_lm_eval(
+        model_args=base_model_args,
+        tasks=tasks,
+        output_dir=base_output_dir,
+        num_fewshot=num_fewshot,
+        batch_size=batch_size,
+        device=device,
+        limit=limit,
+    )
 
     # --- 评估 SFT 模型 ---
     print("\n--- 评估 SFT 模型 ---")
     sft_output_dir = str(EVAL_OUTPUT_DIR / "benchmark_sft")
-    sft_cmd = [
-        sys.executable, "-m", "lighteval", "accelerate",
-        f"model_name={merged_dir},dtype=bfloat16,device=cuda,batch_size=4,trust_remote_code=True",
-        tasks,
-        "--output-dir", sft_output_dir,
-    ]
-    print(f"  命令: {' '.join(sft_cmd)}")
-    subprocess.run(sft_cmd, check=True)
+    if sft_eval_mode == "peft":
+        sft_model_args = (
+            f"pretrained={model_name},peft={adapter_path},"
+            "dtype=bfloat16,trust_remote_code=True"
+        )
+    elif sft_eval_mode == "merge":
+        print("\n--- 合并 SFT adapter ---")
+        merged_dir = EVAL_OUTPUT_DIR / "merged_sft_model"
+        if not merged_dir.exists():
+            print(f"  合并 adapter 到: {merged_dir}")
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, torch_dtype=torch.bfloat16, device_map="cpu"
+            )
+            model = PeftModel.from_pretrained(model, str(adapter_path))
+            model = model.merge_and_unload()
+
+            model.save_pretrained(str(merged_dir))
+            tokenizer.save_pretrained(str(merged_dir))
+            del model, tokenizer
+            gc.collect()
+            print("  合并完成")
+        else:
+            print(f"  已存在合并模型: {merged_dir}，跳过合并")
+        sft_model_args = (
+            f"pretrained={merged_dir},dtype=bfloat16,trust_remote_code=True"
+        )
+    else:
+        raise ValueError(f"不支持的 sft_eval_mode: {sft_eval_mode}")
+
+    run_lm_eval(
+        model_args=sft_model_args,
+        tasks=tasks,
+        output_dir=sft_output_dir,
+        num_fewshot=num_fewshot,
+        batch_size=batch_size,
+        device=device,
+        limit=limit,
+    )
 
     print(f"\nBenchmark 结果已保存到:")
     print(f"  Base: {base_output_dir}")
     print(f"  SFT:  {sft_output_dir}")
-    print("请手动对比两个目录下的 results.json 文件。")
+    print("请手动对比两个目录下的结果文件。")
 
 
 # ============================================================
@@ -370,8 +424,19 @@ def main():
     parser.add_argument("--n_samples", type=int, default=20,
                         help="生成对比的样本数 (默认 20)")
     parser.add_argument("--benchmark_tasks", type=str,
-                        default="leaderboard|mmlu|5|1",
-                        help="lighteval 任务 (默认 leaderboard|mmlu|5|1)")
+                        default="mmlu",
+                        help="lm-eval 任务名，逗号分隔 (默认 mmlu)")
+    parser.add_argument("--num_fewshot", type=int, default=5,
+                        help="benchmark few-shot 数 (默认 5)")
+    parser.add_argument("--benchmark_batch_size", type=str, default="4",
+                        help='benchmark batch size，支持如 "4", "auto", "auto:4"')
+    parser.add_argument("--benchmark_device", type=str, default="cuda:0",
+                        help='benchmark 设备 (默认 "cuda:0")')
+    parser.add_argument("--sft_eval_mode", type=str, default="peft",
+                        choices=["peft", "merge"],
+                        help="SFT benchmark 评估方式: peft(默认) 或 merge")
+    parser.add_argument("--benchmark_limit", type=str, default=None,
+                        help="可选，限制 benchmark 样本数用于冒烟测试，例如 20 或 0.1")
     args = parser.parse_args()
 
     if args.mode in ("generate", "all"):
@@ -382,9 +447,18 @@ def main():
 
     if args.mode in ("benchmark", "all"):
         print("\n" + "=" * 60)
-        print("评估: 通用能力回归测试 (lighteval)")
+        print("评估: 通用能力回归测试 (lm-evaluation-harness)")
         print("=" * 60)
-        run_benchmark_eval(args.model_name, args.adapter_path, args.benchmark_tasks)
+        run_benchmark_eval(
+            model_name=args.model_name,
+            adapter_path=args.adapter_path,
+            tasks=args.benchmark_tasks,
+            num_fewshot=args.num_fewshot,
+            batch_size=args.benchmark_batch_size,
+            device=args.benchmark_device,
+            sft_eval_mode=args.sft_eval_mode,
+            limit=args.benchmark_limit,
+        )
 
 
 if __name__ == "__main__":

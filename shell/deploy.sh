@@ -1,5 +1,5 @@
 # 下载 SFT adapter (如果设置了 HF_USERNAME)
-project_path = /workspace/proj_2026_1
+project_path=/workspace/project_2026_1
 HF_USERNAME=MRBSTUDIO
 if [ -n "$HF_USERNAME" ]; then
     cd $project_path
@@ -21,3 +21,4 @@ echo "  python -m scripts.train_sft"
 echo ""
 echo "  # 评估"
 echo "  python -m scripts.eval_sft --mode generate"
+echo "  python -m scripts.eval_sft --mode benchmark --benchmark_tasks mmlu,arc_challenge --num_fewshot 5 --sft_eval_mode peft"

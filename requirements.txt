@@ -12,7 +12,7 @@ bitsandbytes
 einops
 
 # --- 评估与基准测试 ---
-lighteval
+lm-eval
 evaluate
 scikit-learn
 sacrebleu
