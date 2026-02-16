@@ -1,6 +1,7 @@
 # this is for sft evaluation on colab
 
 ## install dependencies
+cd /content/project_2026_1
 pip install -r requirements.txt
 
 ## download data
