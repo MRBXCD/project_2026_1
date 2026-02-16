@@ -14,9 +14,9 @@ SFT 模型评估脚本
    - 对比 base 模型和 SFT 模型的分数
 
 用法:
-    python -m scripts.eval_sft --mode generate
-    python -m scripts.eval_sft --mode benchmark
-    python -m scripts.eval_sft --mode all
+    python -m sft.eval_sft --mode generate
+    python -m sft.eval_sft --mode benchmark
+    python -m sft.eval_sft --mode all
 
 依赖:
     - transformers, peft, torch

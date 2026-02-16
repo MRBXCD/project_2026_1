@@ -548,7 +548,7 @@ lora_config = LoraConfig(
 """
 SFT Training Script Skeleton
 
-File: scripts/train_sft.py
+File: sft/train_sft.py
 """
 import torch
 from datasets import load_dataset
@@ -712,7 +712,7 @@ See detailed design in [Section 4.2.2](#422-reward-function-design-core).
 """
 GRPO Training Script Skeleton
 
-File: scripts/train_grpo.py
+File: rl/train_grpo.py
 
 TRL's GRPOTrainer encapsulates GRPO core logic:
 - Automatically handles group sampling (generate G responses per prompt)
@@ -927,7 +927,7 @@ After training, use rejection sampling during inference to guarantee constraint 
 """
 Rejection Sampling during Inference
 
-File: scripts/inference.py
+File: rl/inference.py
 """
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -1195,14 +1195,17 @@ proj_2026_1/
 │   ├── prepare_grpo_prompts.py     # GRPO Prompt Prep Script
 │   └── synthesize_task_data.py     # Task Formatted Data Synthesis Script
 │
-├── scripts/
+├── sft/
 │   ├── train_sft.py                # SFT Training Entry
+│   └── eval_sft.py                 # SFT Evaluation Entry
+│
+├── rl/
+│   ├── rewards.py                  # Reward Function Definition
 │   ├── train_grpo.py               # GRPO Training Entry
 │   └── inference.py                # Inference + Rejection Sampling
 │
 ├── src/
 │   ├── __init__.py
-│   ├── rewards.py                  # Reward Function Definition
 │   ├── data_utils.py               # Data Loading/Processing Utils
 │   └── eval_utils.py               # Evaluation Utils
 │
@@ -1245,7 +1248,7 @@ proj_2026_1/
 |---|---|---|
 | SFT Training Script Writing | 0.5 Day | `train_sft.py` |
 | SFT Training + Tuning | 1 Day | SFT Checkpoint |
-| Reward Function Implementation | 1 Day | `rewards.py` |
+| Reward Function Implementation | 1 Day | `rl/rewards.py` |
 | GRPO Training Script Writing | 0.5 Day | `train_grpo.py` |
 | GRPO Phase 1 (Pure Rule Reward) | 1 Day | GRPO Phase 1 Checkpoint |
 | GRPO Phase 2 (Add Humor Score) | 1 Day | GRPO Phase 2 Checkpoint |

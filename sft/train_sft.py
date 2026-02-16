@@ -16,8 +16,8 @@ TRL 的 SFTTrainer 已经封装了 SFT 训练的标准流程:
     3. 配置超参数并启动训练
 
 用法:
-    python -m scripts.train_sft
-    python -m scripts.train_sft --model_name Qwen/Qwen3-8B --epochs 3 --batch_size 4
+    python -m sft.train_sft
+    python -m sft.train_sft --model_name Qwen/Qwen3-8B --epochs 3 --batch_size 4
 
 依赖:
     - transformers, trl, peft, torch, datasets, accelerate

@@ -1,11 +1,11 @@
-# 下载 SFT adapter (如果设置了 HF_USERNAME)
-project_path=/workspace/project_2026_1
+# download sft adapter to local from huggingface
+project_path=$(cd "$(dirname "$0")/.."; pwd)
 HF_USERNAME=MRBSTUDIO
 if [ -n "$HF_USERNAME" ]; then
     cd $project_path
     echo '  下载 SFT adapter...'
     mkdir -p $project_path/checkpoints/sft/final
-    hf download ${HF_USERNAME}/humor-sft-qwen3-8b \
+    hf download ${HF_USERNAME}/humor-qwen3-8b/sft \
         --local-dir $project_path/checkpoints/sft/final
 
 else
@@ -17,8 +17,8 @@ echo "  # 数据处理"
 echo "  python -m data_preprocessing.pipeline --stage all"
 echo ""
 echo "  # SFT 训练"
-echo "  python -m scripts.train_sft"
+echo "  python -m sft.train_sft"
 echo ""
 echo "  # 评估"
-echo "  python -m scripts.eval_sft --mode generate"
-echo "  python -m scripts.eval_sft --mode benchmark --benchmark_tasks mmlu,arc_challenge --num_fewshot 5 --sft_eval_mode peft"
+echo "  python -m sft.eval_sft --mode generate"
+echo "  python -m sft.eval_sft --mode benchmark --benchmark_tasks mmlu,arc_challenge --num_fewshot 5 --sft_eval_mode peft"
