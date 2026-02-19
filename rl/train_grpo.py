@@ -61,6 +61,7 @@ from peft import LoraConfig, PeftModel, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
+from rl.humor_judge import build_batch_humor_scorer
 from rl.rewards import build_reward_fn
 
 
@@ -206,8 +207,23 @@ def load_grpo_dataset(
         split="train",
     )
 
+    # Inject /no_think system message to disable Qwen3 thinking mode.
+    # This is more reliable than chat_template_kwargs={"enable_thinking": False},
+    # which may not be correctly propagated by GRPOTrainer in all TRL versions.
+    # The system message is prepended to each prompt's message list.
+    NO_THINK_SYSTEM_MSG = {"role": "system", "content": "/no_think"}
+
+    def _inject_no_think(example):
+        prompt_messages = example["prompt"]
+        if not prompt_messages or prompt_messages[0].get("role") != "system":
+            example["prompt"] = [NO_THINK_SYSTEM_MSG] + prompt_messages
+        return example
+
+    dataset = dataset.map(_inject_no_think)
+
     print(f"Loaded GRPO dataset: {len(dataset)} prompts")
     print(f"  Columns: {dataset.column_names}")
+    print(f"  /no_think system message injected into all prompts")
 
     return dataset
 
@@ -260,10 +276,10 @@ def build_grpo_lora_config(
 # ============================================================
 
 def build_grpo_config(
-    num_generations: int = 8,
+    num_generations: int = 16,
     max_completion_length: int = 256,
-    batch_size: int = 2,
-    grad_accum: int = 4,
+    batch_size: int = 8,
+    grad_accum: int = 2,
     learning_rate: float = 5e-6,
     num_epochs: int = 2,
     beta: float = 0.04,
@@ -276,9 +292,9 @@ def build_grpo_config(
 
     VRAM budget per step:
         Each step processes (batch_size * num_generations) completions.
-        With batch_size=2, num_generations=8: 16 completions per step.
-        The model (8B bf16 ~ 16GB) + 16 completions of up to 256 tokens
-        + optimizer states + gradients fit within 80GB.
+        With batch_size=8, num_generations=16: 128 completions per step.
+        The model (8B bf16 ~ 16GB) + activations for 128 completions
+        + optimizer states fit within 80GB with gradient_checkpointing off.
 
     Loss type:
         We use "grpo" (classic GRPO loss) instead of the TRL default "dapo".
@@ -303,11 +319,11 @@ def build_grpo_config(
         <think>...</think> reasoning blocks before the joke.
 
     Args:
-        num_generations: Number of completions per prompt (G). Default 8.
+        num_generations: Number of completions per prompt (G). Default 16.
         max_completion_length: Max tokens per completion. Default 256.
-        batch_size: Per-device prompt batch size. Default 2.
-        grad_accum: Gradient accumulation steps. Default 4.
-            Effective batch = batch_size * grad_accum = 8 prompts.
+        batch_size: Per-device prompt batch size. Default 8.
+        grad_accum: Gradient accumulation steps. Default 2.
+            Effective batch = batch_size * grad_accum = 16 prompts.
         learning_rate: RL-stage learning rate. Default 5e-6.
             Much smaller than SFT (2e-4) to prevent catastrophic updates.
         num_epochs: Number of training epochs. Default 2.
@@ -346,14 +362,20 @@ def build_grpo_config(
         bf16=True,
 
         # --- Memory optimization ---
-        # gradient_checkpointing is True by default in GRPOConfig.
-        # This is important for GRPO because each step holds
-        # (batch_size * num_generations) forward passes in memory.
-        gradient_checkpointing=True,
+        # gradient_checkpointing=True saves VRAM by not storing intermediate
+        # activations (recomputes them during backward pass), but makes
+        # batch_size almost irrelevant to VRAM usage.
+        # On A100 80GB with 8B model (~18GB static), there is plenty of
+        # headroom. Disabling checkpointing lets activations scale with
+        # batch_size, using more VRAM but speeding up training (~30% faster)
+        # by avoiding recomputation.
+        # If OOM occurs, switch back to True and reduce batch_size.
+        gradient_checkpointing=False,
 
         # --- Qwen3 thinking mode ---
-        # Disable <think>...</think> generation by passing enable_thinking=False
-        # to the chat template. This ensures the model outputs jokes directly.
+        # Thinking mode is primarily disabled via /no_think system message
+        # injected in load_grpo_dataset(). This kwarg is kept as a secondary
+        # safeguard, but may not be effective in all TRL versions.
         chat_template_kwargs={"enable_thinking": False},
 
         # --- Logging and Saving ---
@@ -362,6 +384,7 @@ def build_grpo_config(
         save_steps=50,
         save_total_limit=5,
         log_completions=True,
+        num_completions_to_print=0,  # log to wandb Table, suppress terminal output
         report_to=report_to,
         seed=42,
     )
@@ -394,16 +417,16 @@ def main():
         help="Path to the SFT LoRA adapter directory",
     )
     parser.add_argument(
-        "--num_generations", type=int, default=8,
-        help="Number of completions per prompt, G (default: 8)",
+        "--num_generations", type=int, default=16,
+        help="Number of completions per prompt, G (default: 16)",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=2,
-        help="Per-device prompt batch size (default: 2)",
+        "--batch_size", type=int, default=8,
+        help="Per-device prompt batch size (default: 8)",
     )
     parser.add_argument(
-        "--grad_accum", type=int, default=4,
-        help="Gradient accumulation steps (default: 4)",
+        "--grad_accum", type=int, default=2,
+        help="Gradient accumulation steps (default: 2)",
     )
     parser.add_argument(
         "--lr", type=float, default=5e-6,
@@ -433,6 +456,11 @@ def main():
         "--report_to", type=str, default="wandb",
         choices=["wandb", "tensorboard", "none"],
         help="Experiment tracking backend (default: wandb)",
+    )
+    parser.add_argument(
+        "--use_humor_judge", action="store_true",
+        help="Enable Phase 2: use Gemini LLM-as-Judge for humor scoring. "
+             "Requires GEMINI_API_KEY environment variable.",
     )
     args = parser.parse_args()
 
@@ -478,10 +506,17 @@ def main():
 
     # ---- Step 5: Build Reward Function ----
     print("\n" + "=" * 60)
-    print("Step 5: Build reward function (Phase 1: rule-based)")
-    print("=" * 60)
-    reward_fn = build_reward_fn(humor_scorer=None)
-    print("  Reward: format + keyword (no humor scorer)")
+    if args.use_humor_judge:
+        print("Step 5: Build reward function (Phase 2: rules + humor judge)")
+        print("=" * 60)
+        batch_scorer = build_batch_humor_scorer()
+        reward_fn = build_reward_fn(batch_humor_scorer=batch_scorer)
+        print("  Reward: format + keyword + relevance + humor (Gemini LLM-as-Judge)")
+    else:
+        print("Step 5: Build reward function (Phase 1: rule-based)")
+        print("=" * 60)
+        reward_fn = build_reward_fn()
+        print("  Reward: format + keyword + relevance (no humor scorer)")
 
     # ---- Step 6: Create GRPOTrainer ----
     print("\n" + "=" * 60)

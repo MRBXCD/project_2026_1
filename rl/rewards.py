@@ -400,10 +400,14 @@ def reward_humor(
     response_text: str,
     scorer: Callable[[str, str], float] | None = None,
 ) -> float:
-    """Evaluate the humor quality of a generated response.
+    """Evaluate the humor quality of a generated response (single-sample).
 
-    This is a placeholder for Phase 2 of GRPO training. In Phase 1,
-    scorer is None and this function always returns 0.0.
+    This function processes ONE (prompt, response) pair at a time.
+    It does NOT support batch input. For batch processing in GRPO
+    training, use build_reward_fn(batch_humor_scorer=...) which calls
+    the batch scorer directly and bypasses this function.
+
+    In Phase 1, scorer is None and this function always returns 0.0.
 
     In Phase 2, the scorer can be either:
     - An LLM-as-Judge function: calls an external API (e.g., Gemini) to
@@ -415,9 +419,11 @@ def reward_humor(
         scorer(prompt: str, response: str) -> float
     and return a value in the range [-1.0, 1.0].
 
+    Batch support: No. Single sample only. See build_reward_fn for batch path.
+
     Args:
-        prompt_text: The user prompt (plain text, not message format).
-        response_text: The generated response (plain text).
+        prompt_text: Single user prompt string (plain text).
+        response_text: Single generated response string (plain text).
         scorer: Optional callable that scores humor quality.
             If None, returns 0.0 (Phase 1 behavior).
 
@@ -429,11 +435,8 @@ def reward_humor(
 
     try:
         score = scorer(prompt_text, response_text)
-        # Clamp to expected range for safety
         return max(-1.0, min(1.0, float(score)))
     except Exception:
-        # Return neutral score on any scorer failure to avoid
-        # crashing the training loop
         return 0.0
 
 
@@ -447,6 +450,7 @@ def compute_reward(
     keywords: list[str] | None = None,
     headline: str | None = None,
     humor_scorer: Callable[[str, str], float] | None = None,
+    humor_score_override: float | None = None,
 ) -> float:
     """Compute the composite reward for a single (prompt, response) pair.
 
@@ -455,28 +459,38 @@ def compute_reward(
         total = WEIGHT_FORMAT    * reward_format(response_text)
               + WEIGHT_KEYWORD   * reward_keyword(response_text, keywords)
               + WEIGHT_RELEVANCE * reward_relevance(headline, response_text)
-              + WEIGHT_HUMOR     * reward_humor(prompt_text, response_text, humor_scorer)
+              + WEIGHT_HUMOR     * humor_score
+
+    The humor_score comes from either:
+    - humor_score_override (pre-computed by batch scorer, takes priority)
+    - reward_humor(prompt_text, response_text, humor_scorer) (single call)
+    - 0.0 (when both are None, Phase 1 behavior)
 
     Short-circuit: if format reward is severely negative (<= -1.0),
     returns the format reward directly without computing other sub-rewards.
-    This saves computation on clearly degenerate outputs and provides a
-    strong negative signal for the GRPO advantage estimation.
+
+    Batch support: No. Single sample only. The batch path in
+    build_reward_fn() calls this function with pre-computed
+    humor_score_override to avoid redundant API calls.
 
     Args:
-        prompt_text: The user prompt in plain text.
-        response_text: The generated response in plain text.
+        prompt_text: Single user prompt string (plain text).
+        response_text: Single generated response string (plain text).
         keywords: List of required keywords. None or empty list means no
             keyword constraint.
         headline: The news headline text. None or empty string means no
             headline (e.g., keyword subtask), relevance reward is 0.0.
-        humor_scorer: Optional humor scoring callable (see reward_humor docs).
-            None in Phase 1.
+        humor_scorer: Optional single-sample humor scorer callable.
+            Signature: scorer(prompt, response) -> float.
+            Ignored if humor_score_override is provided.
+        humor_score_override: Optional pre-computed humor score in [-1, 1].
+            When provided, skips calling humor_scorer/reward_humor entirely.
+            Used by the batch path in build_reward_fn().
 
     Returns:
         float: Weighted composite reward score.
 
     Example:
-        >>> # Phase 1: format-compliant, no keywords, no humor scorer
         >>> compute_reward("Tell a joke", "Why did the chicken cross the road?", [])
         0.5  # 1.0 * 0.5 + 2.0 * 0.0 + 0.5 * 0.0 + 1.5 * 0.0
     """
@@ -490,7 +504,12 @@ def compute_reward(
 
     r_keyword = reward_keyword(response_text, keywords or [])
     r_relevance = reward_relevance(headline or "", response_text)
-    r_humor = reward_humor(prompt_text, response_text, humor_scorer)
+
+    # Humor score: use override if provided (batch path), else call scorer
+    if humor_score_override is not None:
+        r_humor = max(-1.0, min(1.0, float(humor_score_override)))
+    else:
+        r_humor = reward_humor(prompt_text, response_text, humor_scorer)
 
     total = (
         WEIGHT_FORMAT * r_format
@@ -508,6 +527,7 @@ def compute_reward(
 
 def build_reward_fn(
     humor_scorer: Callable[[str, str], float] | None = None,
+    batch_humor_scorer: Callable[[list[str], list[str]], list[float]] | None = None,
 ) -> Callable:
     """Build a reward function compatible with TRL GRPOTrainer (v0.27.1).
 
@@ -515,6 +535,20 @@ def build_reward_fn(
     expected by GRPOTrainer._calculate_rewards(). The returned function
     handles the conversion between TRL's conversational message format
     and our plain-text reward functions.
+
+    Humor scoring modes (mutually exclusive, batch_humor_scorer takes priority):
+        - Phase 1: both None → humor reward is always 0.0.
+        - Phase 2 single: humor_scorer provided → calls scorer(prompt, response)
+          per sample. Simple but slow for GRPO (128 API calls/step).
+        - Phase 2 batch: batch_humor_scorer provided → calls
+          scorer(prompts_list, responses_list) once for the entire batch.
+          Much faster for GRPO (16 batched API calls/step with batch_size=8).
+
+    Batch processing flow (when batch_humor_scorer is provided):
+        1. Extract all prompt/response texts from conversational format.
+        2. Identify non-degenerate samples (format reward > -1.0).
+        3. Call batch_humor_scorer ONCE for all non-degenerate samples.
+        4. Combine batch humor scores with per-sample rule rewards.
 
     GRPOTrainer calls the reward function as:
 
@@ -536,23 +570,29 @@ def build_reward_fn(
         - headline[i] comes directly from the dataset's "headline" column
 
     Args:
-        humor_scorer: Optional humor scoring function for Phase 2.
-            If None, humor reward is always 0.0 (Phase 1).
+        humor_scorer: Optional single-sample humor scorer for Phase 2.
+            Signature: scorer(prompt: str, response: str) -> float.
+            Ignored if batch_humor_scorer is also provided.
+        batch_humor_scorer: Optional batch humor scorer for Phase 2.
+            Signature: scorer(prompts: list[str], responses: list[str]) -> list[float].
+            Takes priority over humor_scorer when both are provided.
+            Built by rl.humor_judge.build_batch_humor_scorer().
 
     Returns:
         Callable: A function with the signature expected by GRPOTrainer:
             (prompts, completions, **kwargs) -> list[float]
 
     Usage:
-        # In train_grpo.py
-        from rl.rewards import build_reward_fn
+        # Phase 1: no humor scoring
+        reward_fn = build_reward_fn()
 
-        reward_fn = build_reward_fn()  # Phase 1
-        trainer = GRPOTrainer(
-            model=model,
-            reward_funcs=reward_fn,
-            ...
-        )
+        # Phase 2 single: one API call per sample (for inference)
+        from rl.humor_judge import build_humor_scorer
+        reward_fn = build_reward_fn(humor_scorer=build_humor_scorer())
+
+        # Phase 2 batch: batched API calls (for GRPO training)
+        from rl.humor_judge import build_batch_humor_scorer
+        reward_fn = build_reward_fn(batch_humor_scorer=build_batch_humor_scorer())
     """
     def reward_fn(
         prompts: list[list[dict]],
@@ -563,9 +603,9 @@ def build_reward_fn(
     ) -> list[float]:
         """Compute rewards for a batch of (prompt, completion) pairs.
 
-        This inner function is called by GRPOTrainer during training.
-        It extracts plain text from the conversational format and delegates
-        to compute_reward() for each sample.
+        Batch support: Yes. This function processes the entire batch at once.
+        When batch_humor_scorer is provided, humor scoring is done in a
+        single batched call rather than per-sample calls.
 
         Args:
             prompts: Batch of prompts in conversational format.
@@ -587,23 +627,45 @@ def build_reward_fn(
             list[float]: Reward scores, one per (prompt, completion) pair.
                 Length equals len(prompts) == len(completions).
         """
+        n = len(completions)
+
+        # Step 1: Extract plain text from conversational format
+        prompt_texts = [prompts[i][-1]["content"] for i in range(n)]
+        response_texts = [completions[i][-1]["content"] for i in range(n)]
+        kw_list = [keywords[i] if keywords is not None else [] for i in range(n)]
+        hl_list = [headline[i] if headline is not None else "" for i in range(n)]
+
+        # Step 2: Batch humor scoring (if batch scorer provided)
+        humor_scores: list[float | None] = [None] * n
+
+        if batch_humor_scorer is not None:
+            # Pre-compute format rewards to identify degenerate samples
+            format_rewards = [reward_format(r) for r in response_texts]
+
+            # Only score non-degenerate samples (saves API calls)
+            valid_indices = [i for i in range(n) if format_rewards[i] > -1.0]
+
+            if valid_indices:
+                valid_prompts = [prompt_texts[i] for i in valid_indices]
+                valid_responses = [response_texts[i] for i in valid_indices]
+
+                batch_scores = batch_humor_scorer(valid_prompts, valid_responses)
+
+                for idx, score in zip(valid_indices, batch_scores):
+                    humor_scores[idx] = score
+
+        # Step 3: Compute composite reward for each sample
         rewards = []
-
-        for i in range(len(completions)):
-            # Extract plain text from conversational message format.
-            prompt_text = prompts[i][-1]["content"]
-            response_text = completions[i][-1]["content"]
-
-            # Get keywords and headline for this sample
-            sample_keywords = keywords[i] if keywords is not None else []
-            sample_headline = headline[i] if headline is not None else ""
-
+        for i in range(n):
             reward = compute_reward(
-                prompt_text=prompt_text,
-                response_text=response_text,
-                keywords=sample_keywords,
-                headline=sample_headline,
-                humor_scorer=humor_scorer,
+                prompt_text=prompt_texts[i],
+                response_text=response_texts[i],
+                keywords=kw_list[i],
+                headline=hl_list[i],
+                # Single scorer used only when no batch scorer is provided
+                humor_scorer=humor_scorer if batch_humor_scorer is None else None,
+                # Pre-computed batch humor score (None if not available)
+                humor_score_override=humor_scores[i],
             )
             rewards.append(reward)
 

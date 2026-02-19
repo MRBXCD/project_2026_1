@@ -1,0 +1,22 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["rl"]
+omit = [
+    "rl/__init__.py",
+    "rl/train_grpo.py",  # requires GPU + model loading (integration test)
+    "rl/inference.py",   # requires GPU + model loading (integration test)
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "\\.\\.\\.",
+]
