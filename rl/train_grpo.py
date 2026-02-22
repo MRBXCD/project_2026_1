@@ -54,6 +54,7 @@ Dependencies:
 
 import argparse
 from pathlib import Path
+from datetime import datetime
 
 import torch
 from datasets import Dataset, load_dataset
@@ -62,6 +63,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
 from rl.humor_judge import build_batch_humor_scorer
+from rl.reward_model import build_batch_reward_model_scorer
 from rl.rewards import build_reward_fn
 
 
@@ -387,6 +389,7 @@ def build_grpo_config(
         num_completions_to_print=0,  # log to wandb Table, suppress terminal output
         report_to=report_to,
         seed=42,
+        run_name=f"grpo_vastai_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     )
 
 
@@ -459,10 +462,24 @@ def main():
     )
     parser.add_argument(
         "--use_humor_judge", action="store_true",
-        help="Enable Phase 2: use Gemini LLM-as-Judge for humor scoring. "
+        help="Enable Phase 2a: use Gemini LLM-as-Judge for humor scoring. "
              "Requires GEMINI_API_KEY environment variable.",
     )
+    parser.add_argument(
+        "--use_reward_model", action="store_true",
+        help="Enable Phase 2b: use trained reward model for humor scoring. "
+             "Mutually exclusive with --use_humor_judge.",
+    )
+    parser.add_argument(
+        "--reward_model_path", type=str,
+        default=str(PROJECT_ROOT / "checkpoints" / "reward_model" / "final"),
+        help="Path to the trained reward model checkpoint "
+             "(default: checkpoints/reward_model/final)",
+    )
     args = parser.parse_args()
+
+    if args.use_humor_judge and args.use_reward_model:
+        parser.error("--use_humor_judge and --use_reward_model are mutually exclusive.")
 
     # ---- Step 1: Load Model (Base + Merge SFT Adapter) ----
     print("=" * 60)
@@ -506,8 +523,14 @@ def main():
 
     # ---- Step 5: Build Reward Function ----
     print("\n" + "=" * 60)
-    if args.use_humor_judge:
-        print("Step 5: Build reward function (Phase 2: rules + humor judge)")
+    if args.use_reward_model:
+        print("Step 5: Build reward function (Phase 2b: rules + reward model)")
+        print("=" * 60)
+        batch_scorer = build_batch_reward_model_scorer(args.reward_model_path)
+        reward_fn = build_reward_fn(batch_humor_scorer=batch_scorer)
+        print("  Reward: format + keyword + relevance + humor (trained reward model)")
+    elif args.use_humor_judge:
+        print("Step 5: Build reward function (Phase 2a: rules + humor judge)")
         print("=" * 60)
         batch_scorer = build_batch_humor_scorer()
         reward_fn = build_reward_fn(batch_humor_scorer=batch_scorer)

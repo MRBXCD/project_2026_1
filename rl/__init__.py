@@ -2,3 +2,4 @@
 
 from rl.rewards import build_reward_fn, compute_reward, reward_relevance
 from rl.humor_judge import build_humor_scorer, build_batch_humor_scorer
+from rl.reward_model import build_reward_model_scorer, build_batch_reward_model_scorer

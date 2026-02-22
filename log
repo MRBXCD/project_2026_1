@@ -1,7 +1,0 @@
-
-============================================================
-评估: 通用能力回归测试 (lighteval)
-============================================================
-
---- 评估 Base 模型 ---
-  命令: /venv/main/bin/python -m lighteval accelerate model_name=Qwen/Qwen3-8B,dtype=bfloat16,device=cuda leaderboard|mmlu|5|1 --output-dir /workspace/project_2026_1/evaluation/benchmark_base

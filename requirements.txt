@@ -6,7 +6,6 @@ trl
 datasets
 safetensors
 tokenizers
-flash_attn
 
 # --- 模型压缩与优化 ---
 bitsandbytes
