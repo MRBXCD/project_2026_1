@@ -1,11 +1,11 @@
 # download sft adapter to local from huggingface
-project_path=$(cd "$(dirname "$0")/.."; pwd)
+project_path=$(cd "$(dirname "$0")/../.."; pwd)
 HF_USERNAME=MRBSTUDIO
 if [ -n "$HF_USERNAME" ]; then
     cd $project_path
     echo '  下载 SFT adapter...'
     mkdir -p $project_path/checkpoints
-    hf download ${HF_USERNAME}/humor-qwen3-8b \
+    huggingface-cli download ${HF_USERNAME}/humor-qwen3-8b \
         --local-dir $project_path/checkpoints
 
 else

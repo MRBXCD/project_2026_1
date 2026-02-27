@@ -46,6 +46,7 @@ Usage:
     python -m rl.train_grpo
     python -m rl.train_grpo --model_name Qwen/Qwen3-8B --num_generations 8
     python -m rl.train_grpo --beta 0.04 --lr 5e-6
+    python -m rl.train_grpo --use_reward_model
 
 Dependencies:
     - transformers, trl (>= 0.27), peft, torch, datasets, accelerate
