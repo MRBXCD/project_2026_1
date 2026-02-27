@@ -1,0 +1,68 @@
+  0%|                                                                                               | 0/1800 [00:00<?, ?it/s]Passing `generation_config` together with generation-related arguments=({'disable_compile'}) is deprecated and will be removed in future versions. Please pass either a `generation_config` object OR all generation parameters explicitly, but not both.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/content/project_2026_1/rl/train_grpo.py", line 578, in <module>
+    main()
+  File "/content/project_2026_1/rl/train_grpo.py", line 563, in main
+    trainer.train()
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/transformers/trainer.py", line 1412, in train
+    return inner_training_loop(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/transformers/trainer.py", line 1742, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/trl/trainer/grpo_trainer.py", line 1094, in training_step
+    output = super().training_step(model, inputs, num_items_in_batch)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/transformers/trainer.py", line 1945, in training_step
+    inputs = self._prepare_inputs(inputs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/trl/extras/profiling.py", line 202, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/trl/trainer/grpo_trainer.py", line 1123, in _prepare_inputs
+    generation_batch = self._generate_and_score_completions(generation_batch)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/trl/trainer/grpo_trainer.py", line 1809, in _generate_and_score_completions
+    rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/trl/extras/profiling.py", line 202, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/trl/trainer/grpo_trainer.py", line 1175, in _calculate_rewards
+    output_reward_func = reward_func(
+                         ^^^^^^^^^^^^
+  File "/content/project_2026_1/rl/rewards.py", line 652, in reward_fn
+    batch_scores = batch_humor_scorer(valid_prompts, valid_responses)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/rl/reward_model.py", line 287, in scorer
+    logits = model(**inputs).logits
+             ^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/peft/peft_model.py", line 1722, in forward
+    return self.base_model(
+           ^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 311, in forward
+    return self.model.forward(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/transformers/utils/generic.py", line 841, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/project_2026_1/.venv/lib/python3.12/site-packages/transformers/modeling_layers.py", line 141, in forward
+    raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
+ValueError: Cannot handle batch sizes > 1 if no padding token is defined.

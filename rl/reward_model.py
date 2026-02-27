@@ -112,7 +112,7 @@ def _load_reward_model(
         print(f"Loading reward model base: {base_model_name}")
         base_model = AutoModelForSequenceClassification.from_pretrained(
             base_model_name,
-            num_labels=1,
+            num_labels=2,
             torch_dtype=torch.bfloat16,
             device_map=device,
             attn_implementation="flash_attention_2",
@@ -129,7 +129,7 @@ def _load_reward_model(
         print(f"Loading merged reward model: {model_path}")
         model = AutoModelForSequenceClassification.from_pretrained(
             str(model_path),
-            num_labels=1,
+            num_labels=2,
             torch_dtype=torch.bfloat16,
             device_map=device,
             attn_implementation="flash_attention_2",
@@ -141,6 +141,7 @@ def _load_reward_model(
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     model.eval()
     total_params = sum(p.numel() for p in model.parameters())
@@ -217,7 +218,7 @@ def build_reward_model_scorer(
         ).to(model.device)
 
         logits = model(**inputs).logits
-        raw_score = logits.squeeze().item()
+        raw_score = logits[0, 0].item()
         return math.tanh(raw_score)
 
     return scorer
@@ -285,7 +286,7 @@ def build_batch_reward_model_scorer(
             ).to(model.device)
 
             logits = model(**inputs).logits
-            raw_scores = logits.squeeze(-1).tolist()
+            raw_scores = logits[:, 0].tolist()
 
             if isinstance(raw_scores, float):
                 raw_scores = [raw_scores]

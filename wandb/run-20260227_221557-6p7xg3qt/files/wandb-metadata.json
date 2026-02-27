@@ -1,0 +1,41 @@
+{
+  "os":  "Linux-6.6.113+-x86_64-with-glibc2.35",
+  "python":  "CPython 3.12.9",
+  "startedAt":  "2026-02-27T22:15:57.775710Z",
+  "args":  [
+    "--use_reward_model"
+  ],
+  "program":  "-m rl.train_grpo",
+  "git":  {
+    "remote":  "https://github.com/MRBXCD/project_2026_1.git",
+    "commit":  "35a1ec7f7defdbcf989e7da671563955b671e8f1"
+  },
+  "email":  "bibodong.ac@gmail.com",
+  "root":  "/content/project_2026_1",
+  "host":  "0c112b2b326f",
+  "executable":  "/content/project_2026_1/.venv/bin/python3",
+  "cpu_count":  6,
+  "cpu_count_logical":  12,
+  "gpu":  "NVIDIA A100-SXM4-80GB",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "259748564992",
+      "used":  "92368871424"
+    }
+  },
+  "memory":  {
+    "total":  "179370471424"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA A100-SXM4-80GB",
+      "memoryTotal":  "85899345920",
+      "cudaCores":  6912,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-d38b3e5c-cec9-14ba-7c4d-83f56997f76a"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "ekghd9evjv8zgpr98rmtcsczf6fllvb3"
+}
