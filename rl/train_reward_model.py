@@ -223,11 +223,11 @@ def build_reward_config(
         gradient_checkpointing=True,
 
         # --- Logging and Saving ---
-        logging_steps=50,
+        logging_steps=10,
         eval_strategy="steps",
-        eval_steps=500,
+        eval_steps=50,
         save_strategy="steps",
-        save_steps=500,
+        save_steps=50,
         save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",

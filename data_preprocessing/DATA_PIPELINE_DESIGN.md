@@ -24,7 +24,9 @@
   - [6.2 Preference Pair Construction Strategy](#62-preference-pair-construction-strategy)
   - [6.3 Data Format](#63-data-format)
   - [6.4 Construction Flow and Sampling Details](#64-construction-flow-and-sampling-details)
-  - [6.5 Notes](#65-notes)
+  - [6.5 Language Rebalancing Strategy](#65-language-rebalancing-strategy)
+  - [6.6 Hard-Negative Synthesis Pipeline](#66-hard-negative-synthesis-pipeline)
+  - [6.7 Notes](#67-notes)
 - [7. Prompt Template Design](#7-prompt-template-design)
   - [7.1 Type A General Humor Prompt Pool](#71-type-a-general-humor-prompt-pool)
   - [7.2 Type B Task Formatted Prompt Templates](#72-type-b-task-formatted-prompt-templates)
@@ -131,45 +133,64 @@ Data Characteristics:
 ### 3.1 Three-Layer Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Data Processing Architecture                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  Layer 1: Source Parsers                                            │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
-│  │  rJokes   │ │   CFun   │ │   HAHA   │ │ Chinese  │ │ SemEval  │ │
-│  │  Parser   │ │  Parser  │ │  Parser  │ │ Humor    │ │  Parser  │ │
-│  │          │ │          │ │          │ │  Parser  │ │          │ │
-│  └─────┬────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘ │
-│        │            │            │             │            │       │
-│        ▼            ▼            ▼             ▼            │       │
-│  Layer 2: Unified Intermediate Format                        │       │
-│  ┌──────────────────────────────────────────────┐          │       │
-│  │ { "text", "lang", "score", "source" }        │          │       │
-│  └──────────────────┬───────────────────────────┘          │       │
-│                     │                                       │       │
-│  Layer 3: Formatters│                                       │       │
-│        ┌────────────┼────────────┐          ┌───────────────┘       │
-│        ▼            ▼            ▼          ▼                       │
-│  ┌──────────┐ ┌──────────┐ ┌─────────────────┐                     │
-│  │ SFT      │ │ SFT      │ │ GRPO Prompt     │                     │
-│  │ Type A   │ │ Type B   │ │ Formatter       │                     │
-│  │ Formatter│ │ Formatter│ │ (Direct from    │                     │
-│  │          │ │          │ │  SemEval)       │                     │
-│  └────┬─────┘ └────┬─────┘ └───────┬─────────┘                     │
-│       │            │               │                                │
-│       ▼            ▼               ▼                                │
-│  ┌──────────────────────────────────────────────┐                  │
-│  │ Output: HuggingFace Dataset (JSONL)           │                  │
-│  │ • data/sft/sft_train.jsonl                    │                  │
-│  │ • data/sft/sft_val.jsonl                      │                  │
-│  │ • data/grpo/grpo_prompts.jsonl                │                  │
-│  └──────────────────────────────────────────────┘                  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          Data Processing Architecture                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Layer 1: Source Parsers                                                     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
+│  │  rJokes   │ │   CFun   │ │   HAHA   │ │ Chinese  │ │ SemEval  │          │
+│  │  Parser   │ │  Parser  │ │  Parser  │ │ Humor    │ │  Parser  │          │
+│  │          │ │          │ │          │ │  Parser  │ │          │          │
+│  └─────┬────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘          │
+│        │            │            │             │            │                │
+│        ▼            ▼            ▼             ▼            │                │
+│  Layer 2: Unified Intermediate Format                        │                │
+│  ┌──────────────────────────────────────────────┐          │                │
+│  │ { "text", "lang", "score", "source" }        │          │                │
+│  └──────────────────┬───────────────────────────┘          │                │
+│                     │                                       │                │
+│  Layer 3: Formatters│                                       │                │
+│        ┌────────────┼────────────┬──────────┐  ┌───────────┘                │
+│        ▼            ▼            ▼          │  ▼                            │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐               │
+│  │ SFT      │ │ SFT      │ │ Reward   │ │ GRPO Prompt      │               │
+│  │ Type A   │ │ Type B   │ │ Pair     │ │ Formatter        │               │
+│  │ Formatter│ │ Formatter│ │ Formatter│ │ (Direct from     │               │
+│  │          │ │          │ │          │ │  SemEval)        │               │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └───────┬──────────┘               │
+│       │            │            │                │                          │
+│       │            │            │  ┌─────────────────────────────────┐      │
+│       │            │            │  │ Reward Hard-Negative Synthesis  │      │
+│       │            │            │  │ (synthesize_reward_data.py)     │      │
+│       │            │            │  │                                 │      │
+│       │            │            │  │ pure_jokes.csv─→ Chosen (ZH)   │      │
+│       │            │            │  │ unified_all  ──→ Chosen (EN/ES)│      │
+│       │            │            │  │ Gemini API   ──→ Rejected (all)│      │
+│       │            │            │  └────────┬────────────────────────┘      │
+│       │            │            │           │                               │
+│       │            │            ▼           ▼                               │
+│       │            │     ┌──────────────────────────┐                      │
+│       │            │     │ format_reward_pairs()     │                      │
+│       │            │     │  1. Score-based pairs     │                      │
+│       │            │     │  2. Per-lang downsample   │                      │
+│       │            │     │  3. Merge synthesized     │                      │
+│       │            │     │  4. Shuffle + split       │                      │
+│       │            │     └───────────┬──────────────┘                      │
+│       │            │                 │                                      │
+│       ▼            ▼                 ▼                ▼                     │
+│  ┌──────────────────────────────────────────────────────────┐              │
+│  │ Output: HuggingFace Dataset (JSONL)                       │              │
+│  │ • data/sft/sft_train.jsonl, sft_val.jsonl                 │              │
+│  │ • data/reward/preference_train.jsonl, preference_val.jsonl│              │
+│  │ • data/grpo/grpo_prompts.jsonl                            │              │
+│  └──────────────────────────────────────────────────────────┘              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 > Note: SemEval data does **not pass through** Unified Intermediate Format, but is directly output to GRPO Formatter by SemEval Parser, because its structure and usage are completely different from SFT data.
+> Note: The Reward Pair Formatter has two data sources: (1) score-based preference pairs from the Unified Intermediate Format, and (2) synthesized hard-negative pairs from `synthesize_reward_data.py`. Both are merged inside `format_reward_pairs()` during the `format_reward` pipeline stage.
 
 ### 3.2 Layer 1: Source Parsers
 
@@ -426,53 +447,131 @@ Preference pair data uses TRL `RewardTrainer` compatible format:
 ### 6.4 Construction Flow and Sampling Details
 
 ```
-Raw Scored Data
+Raw Scored Data (per source)
        │
        ▼
-┌──────────────────────┐
-│ Split into 3 groups:   │
-│  • high (Top 30%)      │
-│  • mid  (Mid 40%)      │  ← Discard, no pairing
-│  • low  (Bottom 30%)   │
-└──────────┬───────────┘
-           │
-           ▼
 ┌──────────────────────────────────┐
-│ Pairing Strategy:                 │
-│  For high and low samples within   │
-│  same language, randomly pair to   │
-│  form (chosen, rejected)           │
-│                                  │
-│  Prompt randomly selected from    │
-│  corresponding language Type A    │
-│  prompt pool                      │
+│ Step 1: Score-based pairing       │
+│ (Within each source independently)│
+│  • Split into 3 groups:           │
+│    high (Top 30%)                 │
+│    mid  (Mid 40%) ← Discard      │
+│    low  (Bottom 30%)              │
+│  • Randomly pair high (chosen)    │
+│    with low (rejected)            │
+│  • Each chosen max 3 times        │
+│  • Prompt from Type A pool        │
 └──────────┬───────────────────────┘
            │
            ▼
 ┌──────────────────────────────────┐
-│ Quality Control:                  │
-│  • Each chosen sample paired max   │
-│    3 times (Avoid overusing good   │
-│    jokes)                          │
-│  • Chosen and rejected text       │
-│    should not be too similar       │
-│    (Optional: Cosine sim filter)   │
+│ Step 2: Per-language downsample   │
+│  • max_pairs_per_lang (def 10K)   │
+│  • Languages exceeding cap are    │
+│    randomly sampled down           │
+│  • Prevents EN/ES data swamping   │
+└──────────┬───────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────┐
+│ Step 3: Merge synthesized pairs   │
+│  • Load reward_neg_{lang}.jsonl   │
+│    from data/synthesized/         │
+│  • Append to per-language pairs   │
+│  • Hard-negatives generated by    │
+│    synthesize_reward_data.py      │
+└──────────┬───────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────┐
+│ Step 4: Merge, shuffle, split     │
+│  • Combine all languages          │
+│  • Shuffle                        │
+│  • Split train / validation (9:1) │
 └──────────────────────────────────┘
 ```
 
-**Estimated Preference Pair Count (Rough Estimate):**
+**Raw Preference Pair Count (before rebalancing):**
 
-| Language | Source | High Est. | Low Est. | Constructible Pairs |
+| Language | Source | High Est. | Low Est. | Raw Pairs |
 |---|---|---|---|---|
 | EN | rJokes (~43K dev) | ~6K-8K | ~6K-8K | ~6K-8K pairs |
 | ZH | Chinese Humor (~3.3K) | ~1K | ~800 | ~800 pairs |
 | ES | HAHA 2019 (~36K, inc is_humor=0) | ~3K-5K | ~15K+ | ~3K-5K pairs |
 
-> Chinese preference pairs are scarce (~800 pairs). If insufficient, consider:
-> - Using CFun data + LLM-as-Judge for RLAIF synthetic preference pairs
-> - Or relax selection range from Chinese Humor (e.g., chosen >= 3, rejected <= 1)
+> The severe Chinese underrepresentation (~800 pairs vs ~50K+ EN/ES combined) caused language bias
+> in the first reward model iteration — see Section 6.5 for the rebalancing strategy.
 
-### 6.5 Notes
+### 6.5 Language Rebalancing Strategy
+
+**Problem**: The initial reward model exhibited language bias due to data imbalance. Chinese/English text received inflated humor scores regardless of actual quality, because the model learned a shortcut: "Chinese text → usually chosen" / "English text → usually seen in training".
+
+**Root cause**: ~151K total preference pairs, of which only ~1.1K were Chinese (~0.7%). The model learned spurious language-based correlations instead of genuine humor features.
+
+**Solution — Two-pronged rebalancing**:
+
+| Strategy | Target | Mechanism | Implementation |
+|---|---|---|---|
+| **Downsampling** | EN, ES | Cap each language at `max_pairs_per_lang` (default 10K) | `format_reward_pairs(max_pairs_per_lang=10000)` |
+| **Hard-negative synthesis** | EN, ZH, ES | Generate obviously non-humorous rejected texts + pair with high-quality chosen | `synthesize_reward_data.py` → `reward_neg_{lang}.jsonl` |
+
+**Rebalanced Target Distribution (approximate):**
+
+| Language | Score-based Pairs | Synthesized Pairs | Total |
+|---|---|---|---|
+| EN | ~10K (downsampled) | ~3K | ~13K |
+| ZH | ~800 (all available) | ~9K (CFun + hard neg) | ~10K |
+| ES | ~10K (downsampled) | ~3K | ~13K |
+
+### 6.6 Hard-Negative Synthesis Pipeline
+
+Implemented in `synthesize_reward_data.py`. Generates preference pairs where **chosen** = real high-quality joke, **rejected** = synthetically generated boring text.
+
+**Data Flow:**
+
+```
+┌───────────────────────────────────────────────────┐
+│ Chosen Sources (Language-specific)                 │
+│  • ZH: Pre-extracted CFun jokes from               │
+│         data/cfun/pure_jokes.csv                   │
+│         (rule-filtered: dedup + length 10-500)     │
+│  • EN: rJokes high-score (>= 0.7) from             │
+│         unified_all.jsonl                          │
+│  • ES: HAHA high-score (>= 0.7) from               │
+│         unified_all.jsonl                          │
+└────────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+┌───────────────────────────────────────────────────┐
+│ Rejected Source (Gemini API)                       │
+│  Generate plain, boring, non-humorous statements   │
+│  in each target language via Gemini API.            │
+│  Quality filter: length, refusal pattern removal.  │
+└────────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+┌───────────────────────────────────────────────────┐
+│ Assembly                                           │
+│  Pair chosen[i] with rejected[i], assign random    │
+│  Type A prompt in corresponding language.           │
+│  Output: data/synthesized/reward_neg_{lang}.jsonl  │
+└───────────────────────────────────────────────────┘
+```
+
+**CFun CSV Rule-based Filtering**:
+
+Chinese chosen samples are loaded from `data/cfun/pure_jokes.csv`, a pre-extracted CSV containing ~37K standalone jokes from the CFun dataset. The following rule-based filters are applied automatically by `load_cfun_jokes()`:
+
+| Filter | Description | Estimated Removal |
+|---|---|---|
+| Deduplication | Remove exact duplicate rows | ~3.2K rows |
+| Min length | Remove texts < 10 characters (punctuation fragments) | ~800 rows |
+| Max length | Remove texts > 500 characters (overly long narratives) | ~180 rows |
+| Whitespace strip | Trim leading/trailing whitespace | — |
+
+After filtering, ~30K valid jokes remain. The function randomly samples `n_samples` from this pool (default 9K for ZH hard-negative synthesis).
+
+### 6.7 Notes
 
 **1. Prompt Consistency Issue**
 
@@ -482,17 +581,19 @@ This is feasible in practice — reward model essentially learns the classificat
 - Use same prompt when pairing (select same one from prompt pool)
 - This means reward model learns more about **text's inherent humor**, rather than **response quality to a specific prompt**
 
-**2. Is Training Reward Model Mandatory?**
+**2. Reward Model Architecture**
 
-For this course project, **phased implementation** is suggested:
-- **Phase 1**: GRPO uses only rule reward (format + keyword). Run through GRPO flow, verify stability.
-- **Phase 2**: Introduce reward model or LLM-as-Judge to add humor scoring dimension.
+Using Qwen3-1.7B + LoRA + `AutoModelForSequenceClassification` (adds a scalar `score` head). LoRA config includes `modules_to_save=["score"]` to ensure the new classification head is trainable. Raw logits are normalized via `tanh` to `[-1.0, 1.0]` during inference.
 
-Preference pair data processing can be prepared in parallel during Phase 1, without blocking GRPO training start.
+Training uses TRL `RewardTrainer` with Bradley-Terry loss. See `rl/train_reward_model.py` for configuration details.
 
-**3. Reward Model Architecture Choice**
+**3. Hard-Negative Design Rationale**
 
-Recommended: Add scalar value head on top of SFT-ed Qwen3-8B (TRL `AutoModelForSequenceClassification` supports this). Can also use smaller model (e.g., Qwen3-1.7B) to reduce inference cost.
+Hard negatives (boring, non-humorous text) serve a different purpose from score-based rejection pairs:
+- **Score-based rejected**: Jokes that are less funny — model learns fine-grained humor ranking
+- **Hard negatives**: Plainly non-humorous text — model learns the fundamental boundary between "humor" and "not humor"
+
+This is especially important for preventing the reward model from assigning high scores to non-humorous text that superficially resembles humor (e.g., short Chinese sentences).
 
 ---
 
@@ -667,13 +768,24 @@ The following data kept intact (including low score/non-humorous), not used in S
 ```
 proj_2026_1/
 ├── data_preprocessing/
-│   ├── DATA_PIPELINE_DESIGN.md     # This design document
-│   ├── parsers.py                  # Layer 1: Parser functions for each source
-│   ├── prompt_templates.py         # Multi-lang prompt pool + task templates
-│   ├── formatters.py               # Layer 3: SFT / GRPO / Preference Pair Formatters
-│   ├── pipeline.py                 # End-to-end pipeline (Parse → Filter → Format → Save)
-│   ├── synthesize_task_data.py     # Type B Data Synthesis Script (Independent, requires API)
-│   └── visulization.ipynb          # Data Visualization (Existing)
+│   ├── DATA_PIPELINE_DESIGN.md        # This design document
+│   ├── parsers.py                     # Layer 1: Parser functions for each source
+│   ├── prompt_templates.py            # Multi-lang prompt pool + task templates
+│   ├── formatters.py                  # Layer 3: SFT / GRPO / Preference Pair Formatters
+│   ├── pipeline.py                    # End-to-end pipeline (Parse → Filter → Format → Save)
+│   ├── synthesize_task_data.py        # Type B SFT Data Synthesis Script (Requires Gemini API)
+│   ├── synthesize_reward_data.py      # Reward Hard-Negative Synthesis Script (Requires Gemini API)
+│   └── visulization.ipynb             # Data Visualization & Inspection
+│
+├── tests/
+│   ├── test_formatters.py             # Tests for format_reward_pairs() rebalancing logic
+│   └── test_synthesize_reward_data.py # Tests for synthesize_reward_data.py pure functions
+│
+├── rl/
+│   ├── train_reward_model.py          # Reward model training (Qwen3-1.7B + LoRA + RewardTrainer)
+│   ├── reward_model.py                # Reward model inference (scoring functions)
+│   ├── sample_reward_model.ipynb      # Interactive reward model case study / debugging
+│   └── ...
 ```
 
 ### Data Output Structure
@@ -693,10 +805,13 @@ proj_2026_1/
 │   │   ├── unified_zh.jsonl
 │   │   └── unified_es.jsonl
 │   │
-│   ├── synthesized/                # Synthesized Type B Data
-│   │   ├── type_b_en.jsonl
+│   ├── synthesized/                # Synthesized Data
+│   │   ├── type_b_en.jsonl         #   SFT Type B (Gemini-generated task data)
 │   │   ├── type_b_zh.jsonl
-│   │   └── type_b_es.jsonl
+│   │   ├── type_b_es.jsonl
+│   │   ├── reward_neg_en.jsonl     #   Reward hard-negative pairs (Gemini-generated)
+│   │   ├── reward_neg_zh.jsonl
+│   │   └── reward_neg_es.jsonl
 │   │
 │   ├── sft/                        # Final SFT Training Data
 │   │   ├── sft_train.jsonl
@@ -766,7 +881,7 @@ python -m data_preprocessing.pipeline --stage all
 #   Output: data/preprocessed/unified_all.jsonl, semeval.jsonl
 python -m data_preprocessing.pipeline --stage parse
 
-# Step 2: Synthesize Type B Data (Requires Gemini API)
+# Step 2: Synthesize Type B SFT Data (Requires Gemini API)
 #   Input: Babel Briefings (Auto download) + Built-in keyword vocab
 #   Output: data/synthesized/type_b_{en,zh,es}.jsonl
 export GEMINI_API_KEY='your-api-key'
@@ -775,6 +890,15 @@ python -m data_preprocessing.pipeline --stage synthesize --n_headline 300 --n_ke
 
 # Or use independent script to synthesize specific language:
 python -m data_preprocessing.synthesize_task_data --lang en --n_headline 200 --n_keyword 100
+
+# Step 2b: Synthesize Reward Hard-Negative Data (Requires Gemini API)
+#   Input: pure_jokes.csv (ZH) + unified_all.jsonl (EN/ES) + Gemini API
+#   Output: data/synthesized/reward_neg_{en,zh,es}.jsonl
+export GEMINI_API_KEY='your-api-key'
+python -m data_preprocessing.synthesize_reward_data --lang zh --n_samples 9000
+python -m data_preprocessing.synthesize_reward_data --lang en --n_samples 3000
+python -m data_preprocessing.synthesize_reward_data --lang es --n_samples 3000
+python -m data_preprocessing.synthesize_reward_data --lang all --n_samples 3000
 
 # Step 3: Unified Intermediate Format → SFT Training Data
 #   Input: data/preprocessed/unified_all.jsonl + data/synthesized/type_b_*.jsonl (Optional)
@@ -787,23 +911,54 @@ python -m data_preprocessing.pipeline --stage format_sft
 python -m data_preprocessing.pipeline --stage format_grpo
 
 # Step 5: Unified Intermediate Format → Reward Model Preference Pairs
-#   Input: data/preprocessed/unified_all.jsonl
+#   Input: data/preprocessed/unified_all.jsonl + data/synthesized/reward_neg_*.jsonl (Optional)
 #   Output: data/reward/preference_train.jsonl, preference_val.jsonl
+#
+#   --max_pairs_per_lang controls per-language downsample cap (default 10000).
+#   Set to 0 to disable downsampling.
 python -m data_preprocessing.pipeline --stage format_reward
+python -m data_preprocessing.pipeline --stage format_reward --max_pairs_per_lang 10000
+python -m data_preprocessing.pipeline --stage format_reward --max_pairs_per_lang 0
 ```
 
 ### 10.3 Stage Comparison
 
-| stage | Inc Parse | Inc Synth | Inc Format | Need API | Scenario |
+| stage | Inc Parse | Inc SFT Synth | Inc Format | Need API | Scenario |
 |---|---|---|---|---|---|
-| `full` | Yes | Yes | Yes | Yes | One-click start to finish |
+| `full` | Yes | Yes | Yes | Yes | One-click start to finish (exc. reward synthesis) |
 | `all` | Yes | No | Yes | No | Type B ready, or not needed yet |
 | Individual stage | - | - | - | synthesize only | Debug, partial regeneration |
 
+> Note: Reward hard-negative synthesis (`synthesize_reward_data.py`) is always run as a standalone script, not included in `full` or `all`, because it requires Gemini API and generates a large number of API calls.
+
 ### 10.4 Recommended Execution Order
 
-**First Run**: `--stage full` (One-click)
+**First Run (full pipeline including reward rebalancing)**:
 
-**Subsequent Adjustment** (e.g., Modified filter threshold, no re-parse/re-synthesis needed):
+```bash
+# 1. Parse raw data
+python -m data_preprocessing.pipeline --stage parse
+
+# 2. (Optional) Synthesize SFT Type B data
+export GEMINI_API_KEY='your-api-key'
+python -m data_preprocessing.pipeline --stage synthesize
+
+# 3. Synthesize reward hard-negatives (requires data/cfun/pure_jokes.csv for ZH)
+python -m data_preprocessing.synthesize_reward_data --lang all --n_samples 3000
+
+# 4. Format all training data (with language rebalancing)
+python -m data_preprocessing.pipeline --stage format_sft
+python -m data_preprocessing.pipeline --stage format_grpo
+python -m data_preprocessing.pipeline --stage format_reward --max_pairs_per_lang 10000
+```
+
+**Subsequent Adjustment** (e.g., modified filter threshold, no re-parse/re-synthesis needed):
 1. `--stage format_sft` Re-generate SFT data
-2. Other stages as needed
+2. `--stage format_reward --max_pairs_per_lang N` Re-generate reward data with different cap
+3. Other stages as needed
+
+**Running Tests:**
+
+```bash
+python -m pytest tests/test_formatters.py tests/test_synthesize_reward_data.py -v
+```

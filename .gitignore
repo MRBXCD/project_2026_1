@@ -19,3 +19,7 @@ env/
 .DS_Store
 
 .ipynb_checkpoints/
+
+wandb/
+
+.pytest_cache/

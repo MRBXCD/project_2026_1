@@ -215,21 +215,34 @@ def run_format_grpo() -> None:
 # Stage 4: format_reward — Unified Intermediate Format → Preference Pairs
 # ============================================================
 
-def run_format_reward() -> None:
+def run_format_reward(
+    max_pairs_per_lang: int | None = 10000,
+) -> None:
     """Construct Reward Model preference pairs data from intermediate format.
 
-    Input: data/preprocessed/unified_all.jsonl (Output of parse stage)
+    Input:
+        - data/preprocessed/unified_all.jsonl (Output of parse stage)
+        - data/synthesized/reward_neg_*.jsonl (Synthesized hard-negatives, optional)
     Output:
         - data/reward/preference_train.jsonl
         - data/reward/preference_val.jsonl
+
+    Args:
+        max_pairs_per_lang: Maximum preference pairs per language.
+            Default 10000 for balanced language distribution.
+            Set to None to keep all pairs (original behavior).
     """
     REWARD_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Load Unified Intermediate Format, grouped by source
     unified_datasets = _load_unified_datasets()
 
-    # 2. Call formatter
-    reward_ds = format_reward_pairs(unified_datasets)
+    # 2. Call formatter with rebalancing parameters
+    reward_ds = format_reward_pairs(
+        unified_datasets,
+        max_pairs_per_lang=max_pairs_per_lang,
+        synthesized_reward_dir=SYNTHESIZED_DIR,
+    )
 
     # 3. Save
     reward_ds["train"].to_json(str(REWARD_DIR / "preference_train.jsonl"))
@@ -309,6 +322,10 @@ def main():
         "--seed", type=int, default=42,
         help="Random seed (default 42)",
     )
+    parser.add_argument(
+        "--max_pairs_per_lang", type=int, default=14000,
+        help="format_reward stage: Max preference pairs per language (default 10000, set 0 for no limit)",
+    )
 
     args = parser.parse_args()
 
@@ -348,7 +365,8 @@ def main():
         print("=" * 60)
         print("Stage: format_reward (Unified Intermediate Format → Preference Pairs)")
         print("=" * 60)
-        run_format_reward()
+        cap = args.max_pairs_per_lang if args.max_pairs_per_lang > 0 else None
+        run_format_reward(max_pairs_per_lang=cap)
 
     print()
     print("Done.")
