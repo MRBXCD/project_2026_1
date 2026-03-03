@@ -42,6 +42,7 @@ Dependencies:
 """
 
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -49,8 +50,8 @@ import torch
 from datasets import load_dataset
 from huggingface_hub import HfApi
 from peft import LoraConfig, TaskType
+from transformers import EarlyStoppingCallback
 from trl import RewardConfig, RewardTrainer
-
 
 # ============================================================
 # Path Constants
@@ -60,6 +61,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PREFERENCE_TRAIN_FILE = PROJECT_ROOT / "data" / "reward" / "preference_train.jsonl"
 PREFERENCE_VAL_FILE = PROJECT_ROOT / "data" / "reward" / "preference_val.jsonl"
 REWARD_MODEL_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "reward_model"
+os.environ["WANDB_PROJECT"] = "proj_2026_1-reward_model"
 
 
 # ============================================================
@@ -301,6 +303,11 @@ def main():
              "(default: 'reward_model', resulting in repo/reward_model/).",
     )
     parser.add_argument(
+        "--early_stopping_patience", type=int, default=7,
+        help="Number of eval steps with no improvement before stopping early. "
+             "Set to 0 to disable early stopping (default: 5).",
+    )
+    parser.add_argument(
         "--tag", type=str, default="normal",
         help="Tag for the training run",
     )
@@ -339,12 +346,22 @@ def main():
     print("\n" + "=" * 60)
     print(f"Step 4: Create RewardTrainer (base model: {args.model_name})")
     print("=" * 60)
+    callbacks = []
+    if args.early_stopping_patience > 0:
+        callbacks.append(EarlyStoppingCallback(
+            early_stopping_patience=args.early_stopping_patience,
+        ))
+        print(f"  Early stopping enabled: patience={args.early_stopping_patience} eval steps")
+    else:
+        print("  Early stopping disabled")
+
     trainer = RewardTrainer(
         model=args.model_name,
         args=reward_config,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         peft_config=lora_config,
+        callbacks=callbacks if callbacks else None,
     )
     print("  RewardTrainer created successfully.")
     trainable = sum(p.numel() for p in trainer.model.parameters() if p.requires_grad)

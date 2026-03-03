@@ -67,7 +67,7 @@ from trl import GRPOConfig, GRPOTrainer
 from rl.humor_judge import build_batch_humor_scorer
 from rl.reward_model import build_batch_reward_model_scorer
 from rl.rewards import build_reward_fn
-
+import os
 
 # ============================================================
 # Path Constants
@@ -77,7 +77,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GRPO_PROMPTS_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts.jsonl"
 SFT_ADAPTER_DIR = PROJECT_ROOT / "checkpoints" / "sft" / "final"
 GRPO_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "grpo"
-
+os.environ["WANDB_PROJECT"] = "proj_2026_1-grpo"
 
 # ============================================================
 # Model Loading — Merge SFT Adapter into Base Model
