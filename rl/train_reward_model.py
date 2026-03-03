@@ -47,6 +47,7 @@ from pathlib import Path
 
 import torch
 from datasets import load_dataset
+from huggingface_hub import HfApi
 from peft import LoraConfig, TaskType
 from trl import RewardConfig, RewardTrainer
 
@@ -162,6 +163,7 @@ def build_reward_lora_config(
 # ============================================================
 
 def build_reward_config(
+    tag: str,
     batch_size: int = 8,
     grad_accum: int = 2,
     learning_rate: float = 1e-5,
@@ -234,7 +236,7 @@ def build_reward_config(
         greater_is_better=False,
         report_to=report_to,
         seed=42,
-        run_name=f"reward_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        run_name=f"reward_model_{tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     )
 
 
@@ -288,6 +290,20 @@ def main():
         choices=["wandb", "tensorboard", "none"],
         help="Experiment tracking backend (default: wandb)",
     )
+    parser.add_argument(
+        "--hf_repo", type=str, default="MRBSTUDIO/humor-qwen3-8b",
+        help="HuggingFace Hub repository ID (e.g. 'username/humor-qwen3-8b'). "
+             "Leave empty to skip upload. Requires HF_TOKEN environment variable.",
+    )
+    parser.add_argument(
+        "--hf_path_in_repo", type=str, default="reward_model",
+        help="Subfolder path inside the HF repository to upload the model to "
+             "(default: 'reward_model', resulting in repo/reward_model/).",
+    )
+    parser.add_argument(
+        "--tag", type=str, default="normal",
+        help="Tag for the training run",
+    )
     args = parser.parse_args()
 
     # ---- Step 1: Load Dataset ----
@@ -310,6 +326,7 @@ def main():
     print("Step 3: Configure training hyperparameters")
     print("=" * 60)
     reward_config = build_reward_config(
+        tag=args.tag,
         batch_size=args.batch_size,
         grad_accum=args.grad_accum,
         learning_rate=args.lr,
@@ -342,13 +359,37 @@ def main():
     trainer.train()
 
     # ---- Step 6: Save Final Model ----
+    # load_best_model_at_end=True ensures trainer.model holds the best checkpoint
+    # (lowest eval_loss) at this point, so final_dir contains the best weights.
     print("\n" + "=" * 60)
-    print("Step 6: Save final model")
+    print("Step 6: Save best model")
     print("=" * 60)
     final_dir = REWARD_MODEL_CHECKPOINT_DIR / "final"
     trainer.save_model(str(final_dir))
     trainer.processing_class.save_pretrained(str(final_dir))
-    print(f"  Model saved to: {final_dir}")
+    print(f"  Best model saved to: {final_dir}")
+
+    # ---- Step 7: Upload to HuggingFace Hub (optional) ----
+    if args.hf_repo:
+        print("\n" + "=" * 60)
+        print(f"Step 7: Upload best model to HuggingFace Hub")
+        print("=" * 60)
+        print(f"  Repository:    {args.hf_repo}")
+        print(f"  Path in repo:  {args.hf_path_in_repo}")
+        print(f"  Source:        {final_dir}")
+        api = HfApi()
+        commit_message = f"reward_model: {reward_config.run_name}"
+        api.upload_folder(
+            folder_path=str(final_dir),
+            repo_id=args.hf_repo,
+            path_in_repo=args.hf_path_in_repo,
+            repo_type="model",
+            commit_message=commit_message,
+        )
+        print(f"  Commit message: {commit_message}")
+        print(f"  Uploaded to: https://huggingface.co/{args.hf_repo}/tree/main/{args.hf_path_in_repo}")
+    else:
+        print("\nStep 7: Skipped (--hf_repo not set)")
 
     print("\nReward model training complete.")
 

@@ -59,6 +59,7 @@ from datetime import datetime
 
 import torch
 from datasets import Dataset, load_dataset
+from huggingface_hub import HfApi
 from peft import LoraConfig, PeftModel, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
@@ -279,6 +280,7 @@ def build_grpo_lora_config(
 # ============================================================
 
 def build_grpo_config(
+    tag: str,
     num_generations: int = 16,
     max_completion_length: int = 256,
     batch_size: int = 8,
@@ -365,20 +367,9 @@ def build_grpo_config(
         bf16=True,
 
         # --- Memory optimization ---
-        # gradient_checkpointing=True saves VRAM by not storing intermediate
-        # activations (recomputes them during backward pass), but makes
-        # batch_size almost irrelevant to VRAM usage.
-        # On A100 80GB with 8B model (~18GB static), there is plenty of
-        # headroom. Disabling checkpointing lets activations scale with
-        # batch_size, using more VRAM but speeding up training (~30% faster)
-        # by avoiding recomputation.
-        # If OOM occurs, switch back to True and reduce batch_size.
         gradient_checkpointing=False,
 
         # --- Qwen3 thinking mode ---
-        # Thinking mode is primarily disabled via /no_think system message
-        # injected in load_grpo_dataset(). This kwarg is kept as a secondary
-        # safeguard, but may not be effective in all TRL versions.
         chat_template_kwargs={"enable_thinking": False},
 
         # --- Logging and Saving ---
@@ -390,7 +381,7 @@ def build_grpo_config(
         num_completions_to_print=0,  # log to wandb Table, suppress terminal output
         report_to=report_to,
         seed=42,
-        run_name=f"grpo_vastai_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        run_name=f"grpo_{tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     )
 
 
@@ -477,6 +468,20 @@ def main():
         help="Path to the trained reward model checkpoint "
              "(default: checkpoints/reward_model/final)",
     )
+    parser.add_argument(
+        "--hf_repo", type=str, default="MRBSTUDIO/humor-qwen3-8b",
+        help="HuggingFace Hub repository ID (e.g. 'username/humor-qwen3-8b'). "
+             "Leave empty to skip upload. Requires HF_TOKEN environment variable.",
+    )
+    parser.add_argument(
+        "--hf_path_in_repo", type=str, default="grpo/reward_model",
+        help="Subfolder path inside the HF repository to upload the model to "
+             "(default: 'grpo/reward_model', resulting in repo/grpo/reward_model/).",
+    )
+    parser.add_argument(
+        "--tag", type=str, default="normal",
+        help="Tag for the training run",
+    )
     args = parser.parse_args()
 
     if args.use_humor_judge and args.use_reward_model:
@@ -511,6 +516,7 @@ def main():
     print("Step 4: Configure training hyperparameters")
     print("=" * 60)
     grpo_config = build_grpo_config(
+        tag=args.tag,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         batch_size=args.batch_size,
@@ -519,7 +525,7 @@ def main():
         num_epochs=args.num_epochs,
         beta=args.beta,
         temperature=args.temperature,
-        report_to=args.report_to,
+        report_to=args.report_to
     )
 
     # ---- Step 5: Build Reward Function ----
@@ -570,6 +576,28 @@ def main():
     trainer.save_model(str(final_dir))
     tokenizer.save_pretrained(str(final_dir))
     print(f"  Model saved to: {final_dir}")
+
+    # ---- Step 9: Upload to HuggingFace Hub (optional) ----
+    if args.hf_repo:
+        print("\n" + "=" * 60)
+        print(f"Step 9: Upload final model to HuggingFace Hub")
+        print("=" * 60)
+        print(f"  Repository:    {args.hf_repo}")
+        print(f"  Path in repo:  {args.hf_path_in_repo}")
+        print(f"  Source:        {final_dir}")
+        api = HfApi()
+        commit_message = f"grpo: {grpo_config.run_name}"
+        api.upload_folder(
+            folder_path=str(final_dir),
+            repo_id=args.hf_repo,
+            path_in_repo=args.hf_path_in_repo,
+            repo_type="model",
+            commit_message=commit_message,
+        )
+        print(f"  Commit message: {commit_message}")
+        print(f"  Uploaded to: https://huggingface.co/{args.hf_repo}/tree/main/{args.hf_path_in_repo}")
+    else:
+        print("\nStep 9: Skipped (--hf_repo not set)")
 
     print("\nGRPO training complete.")
 
