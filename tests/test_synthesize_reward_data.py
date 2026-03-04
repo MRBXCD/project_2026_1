@@ -12,10 +12,13 @@ from data_preprocessing.synthesize_reward_data import (
     load_high_score_jokes,
     assemble_preference_pairs,
     _filter_boring_response,
+    _check_language_match,
     _call_gemini_batch,
     generate_boring_texts,
     BATCH_SIZE,
 )
+
+LANG_CHECK_PATCH = "data_preprocessing.synthesize_reward_data._check_language_match"
 
 
 # ============================================================
@@ -271,6 +274,57 @@ class TestFilterBoringResponse:
         assert _filter_boring_response("The book is on the table.") is True
         assert _filter_boring_response("今天天气不错，气温二十度。") is True
 
+    def test_lang_none_skips_check(self):
+        assert _filter_boring_response("English text is fine.", lang=None) is True
+        assert _filter_boring_response("中文文本也可以通过。", lang=None) is True
+
+    def test_lang_match_accepted(self):
+        with patch(LANG_CHECK_PATCH, return_value=True):
+            assert _filter_boring_response("今天天气不错，气温二十度。", lang="zh") is True
+
+    def test_lang_mismatch_rejected(self):
+        with patch(LANG_CHECK_PATCH, return_value=False):
+            assert _filter_boring_response("The book is on the table.", lang="zh") is False
+
+    def test_lang_check_called_when_lang_set(self):
+        with patch(LANG_CHECK_PATCH, return_value=False) as mock_check:
+            result = _filter_boring_response("今天天气不错，气温二十度。", lang="zh")
+        assert result is False
+        mock_check.assert_called_once_with("今天天气不错，气温二十度。", "zh")
+
+
+# ============================================================
+# TestCheckLanguageMatch
+# ============================================================
+
+class TestCheckLanguageMatch:
+    """Tests for _check_language_match with langid mocked."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_langid(self):
+        """Inject a fake langid into sys.modules so the lazy import picks it up."""
+        import sys
+        mock_langid = MagicMock()
+        with patch.dict(sys.modules, {"langid": mock_langid}):
+            self._langid_mock = mock_langid
+            yield
+
+    def _set_classify(self, detected_lang: str, confidence: float):
+        self._langid_mock.classify.return_value = (detected_lang, confidence)
+
+    def test_matching_lang_returns_true(self):
+        self._set_classify("zh", -10.0)
+        assert _check_language_match("今天下雨了", "zh") is True
+
+    def test_mismatched_lang_returns_false(self):
+        self._set_classify("en", -10.0)
+        assert _check_language_match("It is raining today", "zh") is False
+
+    def test_set_languages_called_with_all_three(self):
+        self._set_classify("en", -10.0)
+        _check_language_match("hello", "en")
+        self._langid_mock.set_languages.assert_called_once_with(["en", "zh", "es"])
+
 
 # ============================================================
 # TestCallGeminiBatch
@@ -372,9 +426,16 @@ class TestCallGeminiBatch:
 # ============================================================
 
 class TestGenerateBoringTexts:
-    def _make_batch_return(self, texts: list[str]):
-        """Helper: return value for a single _call_gemini_batch mock call."""
-        return texts
+    """Tests for generate_boring_texts batch orchestration logic.
+
+    _check_language_match is patched to always return True so these tests
+    focus on batching and filtering behavior, not language detection.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_lang_check(self):
+        with patch(LANG_CHECK_PATCH, return_value=True):
+            yield
 
     @patch("data_preprocessing.synthesize_reward_data.time.sleep")
     @patch("data_preprocessing.synthesize_reward_data._call_gemini_batch")
@@ -394,7 +455,7 @@ class TestGenerateBoringTexts:
     @patch("data_preprocessing.synthesize_reward_data._init_gemini_client")
     def test_multiple_batches_needed(self, mock_client, mock_batch, mock_sleep):
         mock_client.return_value = MagicMock()
-        batch_texts = [f"Text {i} from this batch call." for i in range(80)]
+        batch_texts = [f"这是第{i}条测试用的无聊陈述。" for i in range(80)]
         mock_batch.return_value = batch_texts
 
         result = generate_boring_texts("zh", n_samples=200)

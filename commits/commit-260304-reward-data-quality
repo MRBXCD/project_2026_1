@@ -1,0 +1,108 @@
+Fix: Reward data normalization, quantile sampling, and allocation config
+
+Three correctness bugs were found and fixed in the reward model preference
+pair data pipeline, and the allocation logic was redesigned to give
+explicit control over data composition.
+
+--- Bug Fixes ---
+
+1. rJokes score normalization cap was set to 20, but the actual maximum
+   raw score in the dataset is 11. The cap was never triggered, causing
+   the effective range to be [0, 0.55] instead of [0, 1]. Fixed by
+   changing RJOKES_SCORE_CAP from 20 to 11 in parsers.py.
+
+2. Score-based quantile split in format_reward_pairs() used ">= q70" and
+   "<= q30" thresholds. All three datasets have highly discrete scores
+   (rJokes: 12 unique values, Chinese Humor: 5 unique values, HAHA: 61%
+   at score=0), causing entire tie groups to be included and violating
+   the intended 30/40/30 split. For example, rJokes was selecting 75% of
+   data instead of 60%. Fixed by using rank-based selection with random
+   tie-breaking: indices are shuffled then stable-sorted by score, and
+   exactly the bottom/top 30% by index position are taken.
+
+3. synthesize_reward_data.py score threshold for EN was 0.25, calibrated
+   for the old cap of 20 (= raw >= 5). After changing cap to 11, the
+   threshold was updated to round(5/11, 4) = 0.4545 to select the same
+   raw score >= 5 pool.
+
+--- Redesign: allocation config replaces max_pairs_per_lang ---
+
+The original max_pairs_per_lang parameter was a single cap applied after
+merging score-based and synthesized pairs, which could not control the
+composition ratio between the two types. Analysis of the pre-fix dataset
+showed:
+  EN: 5.3% hard-negative, 94.7% score-based
+  ES: 40.7% hard-negative, 59.3% score-based
+  ZH: 92.5% hard-negative, 7.5% score-based
+
+This imbalance meant EN/ES models lacked signals to score boring text
+low, which was the root cause of observed language bias (boring English
+text scoring 0.2–0.6, while boring Chinese text scored ~0.98 in the
+pre-fix model).
+
+Replaced max_pairs_per_lang with REWARD_PAIR_ALLOCATION constant in
+formatters.py, which independently caps score_based and synthesized
+counts per language:
+  EN: score_based=7000, synthesized=7000  → 50% hard-negative
+  ES: score_based=7000, synthesized=7000  → 50% hard-negative
+  ZH: score_based=None (all ~1230),       → ~91% hard-negative
+      synthesized=13000
+
+--- Instrumentation ---
+
+format_reward_pairs() now prints a composition table at the end of
+Step 4, showing score_based / synthesized / total per language.
+
+--- Data Visualization Updates ---
+
+visulization.ipynb received three improvements:
+  - Added Unified Dataset Score Statistics section (cells 2-3):
+    loads unified_all.jsonl, prints per-source stats at key thresholds
+    (0.25, 0.30, 0.50, 0.70), and renders histogram + box-plot.
+  - Added HAHA 2019 dataset statistics section (cells 9-13):
+    mirrors the existing rJokes analysis with is_humor distribution,
+    funniness score histograms, text length distribution, and top/bottom
+    samples.
+  - Replaced regex-based detect_lang() in the Rebalanced Preference
+    Pairs Overview section with langid-based detection
+    (langid.set_languages + langid.classify), using prompt+chosen text
+    for better classification accuracy.
+
+--- Detailed File Changes ---
+
+data_preprocessing/parsers.py
+  - RJOKES_SCORE_CAP: 20 → 11
+
+data_preprocessing/formatters.py
+  - Added REWARD_PAIR_ALLOCATION module-level config constant.
+  - format_reward_pairs(): replaced max_pairs_per_lang with allocation
+    parameter. Score-based and synthesized pairs are capped independently.
+    Added per-language composition summary print.
+
+data_preprocessing/pipeline.py
+  - run_format_reward(): removed max_pairs_per_lang parameter.
+  - Removed --max_pairs_per_lang CLI argument.
+
+data_preprocessing/synthesize_reward_data.py
+  - _SCORE_THRESHOLDS["en"]: 0.25 → round(5/11, 4) = 0.4545
+
+data_preprocessing/visulization.ipynb
+  - Added unified dataset statistics cells (cells 2-3).
+  - Added HAHA dataset statistics section (cells 9-13).
+  - Replaced regex detect_lang with langid-based detection (cell 13/14).
+
+tests/test_formatters.py
+  - Replaced TestFormatRewardPairsDownsample with TestFormatRewardPairsAllocation
+    and TestFormatRewardPairsSynthMerge tests adapted to allocation API.
+  - Updated TestFormatRewardPairsCombined.
+  - Added TestQuantileTieBreaking with two new tests:
+    test_all_same_score_respects_quantile_limits,
+    test_few_unique_values_stays_within_bounds.
+
+data_preprocessing/DATA_PIPELINE_DESIGN.md
+  - Updated score normalization table (Section 3.3) with effective ranges.
+  - Updated Section 6.2 preference pair sources with tie-breaking note.
+  - Updated Section 6.4 flow diagram to reflect new allocation-based steps.
+  - Updated Section 6.5 rebalancing strategy table and target distribution.
+  - Updated Section 6.6 hard-negative synthesis EN threshold.
+  - Updated Section 10.2/10.4 pipeline commands (removed --max_pairs_per_lang).

@@ -46,12 +46,10 @@ import pandas as pd
 # Constant Definitions
 # ============================================================
 
-# Cap value for rJokes score normalization
-# Reason: rJokes scores have a long-tail distribution, with a few jokes having scores in hundreds or thousands.
-#         Dividing directly by max would make most normalized scores close to 0.
-#         Capped at 20, high-quality jokes with score >= 20 are mapped to 1.0,
-#         while distinctiveness in the 0-20 range is preserved.
-RJOKES_SCORE_CAP = 20
+# Cap value for rJokes score normalization.
+# The actual maximum raw score in the dataset is 11 (Reddit upvotes).
+# Using 11 maps the full data range onto [0, 1].
+RJOKES_SCORE_CAP = 11
 
 # Max score for Chinese Humor and HAHA (original is 1-5)
 HUMOR_SCORE_MAX = 5.0

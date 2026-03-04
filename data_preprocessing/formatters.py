@@ -41,6 +41,21 @@ from data_preprocessing.prompt_templates import (
 
 
 # ============================================================
+# Reward Pair Allocation Config
+# ============================================================
+# Per-language allocation for reward model preference pairs.
+#   score_based: max number of score-based (joke-vs-joke) pairs to keep.
+#                None means use all available.
+#   synthesized: max number of synthesized hard-negative pairs to keep.
+#                None means use all available.
+REWARD_PAIR_ALLOCATION = {
+    "en": {"score_based": 7_000, "synthesized": 7_000},
+    "es": {"score_based": 7_000, "synthesized": 7_000},
+    "zh": {"score_based": None, "synthesized": 13_000},
+}
+
+
+# ============================================================
 # Formatter 1: SFT Type A (Unified Intermediate Format → SFT chat format)
 # ============================================================
 
@@ -315,7 +330,7 @@ def format_reward_pairs(
     high_quantile: float = 0.7,
     low_quantile: float = 0.3,
     max_pairs_per_chosen: int = 3,
-    max_pairs_per_lang: int | None = None,
+    allocation: dict[str, dict[str, int | None]] | None = None,
     synthesized_reward_dir: str | Path | None = None,
     val_ratio: float = 0.1,
     seed: int = 42,
@@ -323,14 +338,10 @@ def format_reward_pairs(
     """Construct Reward Model preference pairs from Unified Intermediate Format data.
 
     Processing Flow:
-        1. Filter sources with scores (exclude CFun with score=None)
-        2. Group by language
-        3. Within each language, split into high / low groups by score (discard middle range)
-        4. Randomly pair high (chosen) and low (rejected)
-        5. Assign the same Type A prompt to each pair
-        6. Per-language downsampling (if max_pairs_per_lang is set)
-        7. Merge synthesized hard-negative pairs (if synthesized_reward_dir is set)
-        8. Merge all languages, shuffle, split train/val
+        1. Generate score-based pairs per source (quantile split with tie-breaking)
+        2. Load synthesized hard-negative pairs
+        3. Apply per-language allocation caps (score_based and synthesized independently)
+        4. Merge all languages, shuffle, split train/val
 
     Args:
         unified_datasets: Dictionary of Unified Intermediate Format datasets output by parser.
@@ -341,9 +352,9 @@ def format_reward_pairs(
         low_quantile: Maximum percentile for low score group. Default 0.3 (Bottom 30% are rejected).
         max_pairs_per_chosen: Max number of pairs per chosen sample.
             Prevents reusing the same good joke too many times. Default 3.
-        max_pairs_per_lang: Maximum number of preference pairs per language.
-            When a language exceeds this cap, pairs are randomly sampled down.
-            None means no cap (original behavior).
+        allocation: Per-language allocation config.  Each language maps to
+            {"score_based": int|None, "synthesized": int|None} where None means
+            "use all available".  Defaults to REWARD_PAIR_ALLOCATION module constant.
         synthesized_reward_dir: Directory containing synthesized hard-negative preference
             pair files (reward_neg_en.jsonl, reward_neg_zh.jsonl, reward_neg_es.jsonl).
             If set and directory exists, these files are loaded and merged into the
@@ -358,6 +369,8 @@ def format_reward_pairs(
             - chosen (list[dict]):   [{"role": "assistant", "content": "High score joke"}]
             - rejected (list[dict]): [{"role": "assistant", "content": "Low score joke"}]
     """
+    if allocation is None:
+        allocation = REWARD_PAIR_ALLOCATION
     rng = random.Random(seed)
 
     # Scored sources (skip cfun and semeval)
@@ -395,16 +408,26 @@ def format_reward_pairs(
 
         lang = _SOURCE_LANG[source_name]
         scores = ds["score"]
+        n = len(scores)
 
-        # 1a. Calculate quantile thresholds within the source
-        sorted_scores = sorted(scores)
-        n = len(sorted_scores)
-        high_threshold = sorted_scores[int(n * high_quantile)]
-        low_threshold = sorted_scores[int(n * low_quantile)]
+        # 1a. Index-based quantile split with random tie-breaking.
+        #     Discrete scores (e.g. rJokes has only 12 unique values) cause
+        #     large groups of ties at quantile boundaries.  Using >= / <=
+        #     would include the entire tie group, violating the intended
+        #     30/40/30 split.  Instead we sort indices with random
+        #     tie-breaking and take exactly the bottom/top slices.
+        indices = list(range(n))
+        rng.shuffle(indices)
+        indices.sort(key=lambda i: scores[i])
 
-        # 1b. Split into high / low groups
-        high_texts = [ds[i]["text"] for i, s in enumerate(scores) if s >= high_threshold]
-        low_texts = [ds[i]["text"] for i, s in enumerate(scores) if s <= low_threshold]
+        n_low = int(n * low_quantile)
+        n_high = n - int(n * high_quantile)
+
+        low_idx_set = set(indices[:n_low])
+        high_idx_set = set(indices[-n_high:])
+
+        low_texts = [ds[i]["text"] for i in range(n) if i in low_idx_set]
+        high_texts = [ds[i]["text"] for i in range(n) if i in high_idx_set]
 
         if not high_texts or not low_texts:
             print(
@@ -413,10 +436,13 @@ def format_reward_pairs(
             )
             continue
 
+        low_max_score = max(scores[i] for i in low_idx_set)
+        high_min_score = min(scores[i] for i in high_idx_set)
         print(
             f"  [reward] {source_name} ({lang}): "
-            f"high={len(high_texts)} (score>={high_threshold:.3f}), "
-            f"low={len(low_texts)} (score<={low_threshold:.3f})"
+            f"high={len(high_texts)} (score>={high_min_score:.3f}), "
+            f"low={len(low_texts)} (score<={low_max_score:.3f}), "
+            f"discarded={n - len(high_texts) - len(low_texts)}"
         )
 
         # 1c. Random pairing: each chosen used max max_pairs_per_chosen times
@@ -444,21 +470,27 @@ def format_reward_pairs(
 
         print(f"  [reward] {source_name} ({lang}): Generated {n_pairs} preference pairs")
 
-    # 2. Per-language downsampling
-    if max_pairs_per_lang is not None:
-        for lang, pairs in lang_pairs.items():
-            n_total = len(pairs["prompt"])
-            if n_total > max_pairs_per_lang:
-                indices = list(range(n_total))
-                rng.shuffle(indices)
-                selected = sorted(indices[:max_pairs_per_lang])
-                for key in ("prompt", "chosen", "rejected"):
-                    pairs[key] = [pairs[key][i] for i in selected]
-                print(
-                    f"  [reward] Downsampled {lang}: {n_total} -> {len(pairs['prompt'])} pairs"
-                )
+    # 2. Apply per-language score_based cap from allocation config
+    for lang, pairs in lang_pairs.items():
+        n_raw = len(pairs["prompt"])
+        cap = allocation.get(lang, {}).get("score_based")
+        if cap is not None and n_raw > cap:
+            indices = list(range(n_raw))
+            rng.shuffle(indices)
+            selected = sorted(indices[:cap])
+            for key in ("prompt", "chosen", "rejected"):
+                pairs[key] = [pairs[key][i] for i in selected]
+            print(f"  [reward] Downsampled {lang} score-based: {n_raw} -> {cap}")
 
-    # 3. Load and merge synthesized hard-negative pairs
+    # 3. Load synthesized hard-negative pairs, apply per-language synthesized cap
+    import json
+
+    synth_counts: dict[str, int] = {"en": 0, "zh": 0, "es": 0}
+    synth_pairs: dict[str, dict[str, list]] = {
+        lang: {"prompt": [], "chosen": [], "rejected": []}
+        for lang in ["en", "zh", "es"]
+    }
+
     if synthesized_reward_dir is not None:
         synth_dir = Path(synthesized_reward_dir)
         if synth_dir.exists():
@@ -466,37 +498,58 @@ def format_reward_pairs(
                 synth_file = synth_dir / f"reward_neg_{lang}.jsonl"
                 if not synth_file.exists():
                     continue
-                import json
-                count = 0
+                records = []
                 with open(synth_file, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
                             continue
-                        record = json.loads(line)
-                        lang_pairs[lang]["prompt"].append(record["prompt"])
-                        lang_pairs[lang]["chosen"].append(record["chosen"])
-                        lang_pairs[lang]["rejected"].append(record["rejected"])
-                        count += 1
-                print(f"  [reward] Loaded {count} synthesized pairs for {lang} from {synth_file.name}")
+                        records.append(json.loads(line))
+
+                synth_cap = allocation.get(lang, {}).get("synthesized")
+                if synth_cap is not None and len(records) > synth_cap:
+                    rng.shuffle(records)
+                    records = records[:synth_cap]
+
+                for record in records:
+                    synth_pairs[lang]["prompt"].append(record["prompt"])
+                    synth_pairs[lang]["chosen"].append(record["chosen"])
+                    synth_pairs[lang]["rejected"].append(record["rejected"])
+
+                synth_counts[lang] = len(records)
+                print(
+                    f"  [reward] Loaded {len(records)} synthesized pairs for {lang} "
+                    f"from {synth_file.name}"
+                )
         else:
             print(f"  [reward] Synthesized dir {synth_dir} does not exist, skipping")
 
-    # 4. Merge all languages
+    # 4. Merge score-based + synthesized, print composition summary
     all_pairs: dict[str, list] = {"prompt": [], "chosen": [], "rejected": []}
+
+    print()
+    print(f"  {'lang':<6} {'score_based':>12} {'synthesized':>12} {'total':>8}")
+    print(f"  {'-'*6} {'-'*12} {'-'*12} {'-'*8}")
+
     for lang in ["en", "zh", "es"]:
-        pairs = lang_pairs[lang]
+        n_score = len(lang_pairs[lang]["prompt"])
+        n_synth = synth_counts[lang]
+
         for key in ("prompt", "chosen", "rejected"):
-            all_pairs[key].extend(pairs[key])
-        if pairs["prompt"]:
-            print(f"  [reward] {lang}: {len(pairs['prompt'])} pairs (final)")
+            all_pairs[key].extend(lang_pairs[lang][key])
+            all_pairs[key].extend(synth_pairs[lang][key])
+
+        total = n_score + n_synth
+        print(f"  {lang:<6} {n_score:>12,} {n_synth:>12,} {total:>8,}")
+
+    total_all = len(all_pairs["prompt"])
+    print(f"  {'total':<6} {'':<12} {'':<12} {total_all:>8,}")
 
     if not all_pairs["prompt"]:
         raise ValueError("Failed to generate any preference pairs, please check data and parameters")
 
     # 5. Convert to Dataset
     pairs_ds = datasets.Dataset.from_dict(all_pairs)
-    print(f"  [reward] Total preference pairs: {len(pairs_ds)}")
 
     # 6. Shuffle + Split train / validation
     split = pairs_ds.train_test_split(test_size=val_ratio, seed=seed)

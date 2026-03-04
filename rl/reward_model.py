@@ -112,7 +112,7 @@ def _load_reward_model(
         print(f"Loading reward model base: {base_model_name}")
         base_model = AutoModelForSequenceClassification.from_pretrained(
             base_model_name,
-            num_labels=2,
+            num_labels=1,
             torch_dtype=torch.bfloat16,
             device_map=device,
             attn_implementation="flash_attention_2",
@@ -129,7 +129,7 @@ def _load_reward_model(
         print(f"Loading merged reward model: {model_path}")
         model = AutoModelForSequenceClassification.from_pretrained(
             str(model_path),
-            num_labels=2,
+            num_labels=1,
             torch_dtype=torch.bfloat16,
             device_map=device,
             attn_implementation="flash_attention_2",

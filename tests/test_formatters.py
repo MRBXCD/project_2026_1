@@ -72,13 +72,20 @@ def _write_synth_jsonl(path, lang: str, n: int) -> None:
 # TestFormatRewardPairsDownsample — max_pairs_per_lang
 # ============================================================
 
-class TestFormatRewardPairsDownsample:
-    def test_no_new_params_preserves_behavior(self):
-        """With new params as None, behavior matches original."""
+_NO_CAP_ALLOCATION = {
+    "en": {"score_based": None, "synthesized": None},
+    "es": {"score_based": None, "synthesized": None},
+    "zh": {"score_based": None, "synthesized": None},
+}
+
+
+class TestFormatRewardPairsAllocation:
+    def test_no_cap_preserves_all_pairs(self):
+        """With allocation=None for all caps, all pairs are kept."""
         unified = _make_mock_unified(n_en=50, n_es=30, n_zh=20)
         result = format_reward_pairs(
             unified,
-            max_pairs_per_lang=None,
+            allocation=_NO_CAP_ALLOCATION,
             synthesized_reward_dir=None,
         )
         assert "train" in result
@@ -86,35 +93,54 @@ class TestFormatRewardPairsDownsample:
         total = len(result["train"]) + len(result["validation"])
         assert total > 0
 
-    def test_max_pairs_per_lang_caps_each_language(self):
-        """Each language should have at most max_pairs_per_lang pairs."""
+    def test_score_based_cap_limits_pairs(self):
+        """score_based cap should limit the number of score-based pairs."""
         cap = 5
+        alloc = {
+            "en": {"score_based": cap, "synthesized": None},
+            "es": {"score_based": cap, "synthesized": None},
+            "zh": {"score_based": cap, "synthesized": None},
+        }
         unified = _make_mock_unified(n_en=50, n_es=30, n_zh=20)
-        result = format_reward_pairs(unified, max_pairs_per_lang=cap)
+        result = format_reward_pairs(
+            unified, allocation=alloc, synthesized_reward_dir=None,
+        )
         total_ds = datasets.concatenate_datasets([result["train"], result["validation"]])
         counts = _count_by_lang(total_ds)
         for lang, count in counts.items():
             assert count <= cap, f"{lang} has {count} pairs, expected <= {cap}"
 
-    def test_max_pairs_per_lang_none_means_no_cap(self):
-        """None means no truncation."""
+    def test_cap_smaller_than_data_reduces_output(self):
+        """A small cap should produce fewer pairs than no cap."""
         unified = _make_mock_unified(n_en=100, n_es=60, n_zh=40)
-        result_no_cap = format_reward_pairs(unified, max_pairs_per_lang=None)
+        result_no_cap = format_reward_pairs(
+            unified, allocation=_NO_CAP_ALLOCATION,
+        )
         total_no_cap = len(result_no_cap["train"]) + len(result_no_cap["validation"])
 
-        result_with_cap = format_reward_pairs(unified, max_pairs_per_lang=5)
+        alloc_small = {
+            "en": {"score_based": 5, "synthesized": None},
+            "es": {"score_based": 5, "synthesized": None},
+            "zh": {"score_based": 5, "synthesized": None},
+        }
+        result_with_cap = format_reward_pairs(unified, allocation=alloc_small)
         total_with_cap = len(result_with_cap["train"]) + len(result_with_cap["validation"])
 
         assert total_no_cap > total_with_cap
 
-    def test_max_pairs_larger_than_data_keeps_all(self):
+    def test_huge_cap_keeps_all(self):
         """When cap is larger than available data, all pairs are kept."""
         unified = _make_mock_unified(n_en=20, n_es=10, n_zh=10)
-        result_huge_cap = format_reward_pairs(unified, max_pairs_per_lang=100000)
-        result_no_cap = format_reward_pairs(unified, max_pairs_per_lang=None)
+        alloc_huge = {
+            "en": {"score_based": 100000, "synthesized": None},
+            "es": {"score_based": 100000, "synthesized": None},
+            "zh": {"score_based": 100000, "synthesized": None},
+        }
+        result_huge = format_reward_pairs(unified, allocation=alloc_huge)
+        result_none = format_reward_pairs(unified, allocation=_NO_CAP_ALLOCATION)
 
-        total_huge = len(result_huge_cap["train"]) + len(result_huge_cap["validation"])
-        total_none = len(result_no_cap["train"]) + len(result_no_cap["validation"])
+        total_huge = len(result_huge["train"]) + len(result_huge["validation"])
+        total_none = len(result_none["train"]) + len(result_none["validation"])
         assert total_huge == total_none
 
 
@@ -126,21 +152,56 @@ class TestFormatRewardPairsSynthMerge:
     def test_synth_dir_loads_and_merges(self, tmp_path):
         """Synthesized JSONL files are loaded and merged into output."""
         n_synth = 5
+        alloc = {
+            "en": {"score_based": None, "synthesized": None},
+            "es": {"score_based": None, "synthesized": None},
+            "zh": {"score_based": None, "synthesized": None},
+        }
         for lang in ["en", "zh", "es"]:
             _write_synth_jsonl(tmp_path / f"reward_neg_{lang}.jsonl", lang, n_synth)
 
         unified = _make_mock_unified(n_en=20, n_es=10, n_zh=10)
         result_with_synth = format_reward_pairs(
-            unified, synthesized_reward_dir=tmp_path,
+            unified, allocation=alloc, synthesized_reward_dir=tmp_path,
         )
         result_without_synth = format_reward_pairs(
-            unified, synthesized_reward_dir=None,
+            unified, allocation=alloc, synthesized_reward_dir=None,
         )
 
         total_with = len(result_with_synth["train"]) + len(result_with_synth["validation"])
         total_without = len(result_without_synth["train"]) + len(result_without_synth["validation"])
 
         assert total_with == total_without + n_synth * 3
+
+    def test_synth_cap_limits_loaded_pairs(self, tmp_path):
+        """Synthesized cap should limit the number of synthesized pairs loaded."""
+        n_file = 20
+        synth_cap = 5
+        alloc = {
+            "en": {"score_based": None, "synthesized": synth_cap},
+            "es": {"score_based": None, "synthesized": synth_cap},
+            "zh": {"score_based": None, "synthesized": synth_cap},
+        }
+        for lang in ["en", "zh", "es"]:
+            _write_synth_jsonl(tmp_path / f"reward_neg_{lang}.jsonl", lang, n_file)
+
+        unified = _make_mock_unified(n_en=20, n_es=10, n_zh=10)
+        result_capped = format_reward_pairs(
+            unified, allocation=alloc, synthesized_reward_dir=tmp_path,
+        )
+        alloc_uncapped = {
+            "en": {"score_based": None, "synthesized": None},
+            "es": {"score_based": None, "synthesized": None},
+            "zh": {"score_based": None, "synthesized": None},
+        }
+        result_uncapped = format_reward_pairs(
+            unified, allocation=alloc_uncapped, synthesized_reward_dir=tmp_path,
+        )
+
+        total_capped = len(result_capped["train"]) + len(result_capped["validation"])
+        total_uncapped = len(result_uncapped["train"]) + len(result_uncapped["validation"])
+
+        assert total_capped < total_uncapped
 
     def test_synth_dir_nonexistent_no_error(self, tmp_path):
         """Non-existent synthesized directory doesn't cause errors."""
@@ -182,22 +243,28 @@ class TestFormatRewardPairsSynthMerge:
 
 
 # ============================================================
-# TestFormatRewardPairsCombined — both params together
+# TestFormatRewardPairsCombined — allocation + synthesis together
 # ============================================================
 
 class TestFormatRewardPairsCombined:
-    def test_cap_then_merge(self, tmp_path):
-        """Downsampling + synthesis merge produces expected count."""
-        cap = 5
-        n_synth = 3
+    def test_allocation_caps_both_types(self, tmp_path):
+        """Both score_based and synthesized caps are enforced independently."""
+        score_cap = 5
+        synth_cap = 3
+
+        alloc = {
+            "en": {"score_based": score_cap, "synthesized": synth_cap},
+            "es": {"score_based": score_cap, "synthesized": synth_cap},
+            "zh": {"score_based": score_cap, "synthesized": synth_cap},
+        }
 
         for lang in ["en", "zh", "es"]:
-            _write_synth_jsonl(tmp_path / f"reward_neg_{lang}.jsonl", lang, n_synth)
+            _write_synth_jsonl(tmp_path / f"reward_neg_{lang}.jsonl", lang, 20)
 
         unified = _make_mock_unified(n_en=50, n_es=30, n_zh=20)
         result = format_reward_pairs(
             unified,
-            max_pairs_per_lang=cap,
+            allocation=alloc,
             synthesized_reward_dir=tmp_path,
         )
 
@@ -205,6 +272,57 @@ class TestFormatRewardPairsCombined:
         counts = _count_by_lang(total_ds)
 
         for lang, count in counts.items():
-            assert count <= cap + n_synth, (
-                f"{lang} has {count} pairs, expected <= {cap + n_synth}"
+            assert count <= score_cap + synth_cap, (
+                f"{lang} has {count} pairs, expected <= {score_cap + synth_cap}"
             )
+
+
+# ============================================================
+# TestQuantileTieBreaking — discrete scores with many ties
+# ============================================================
+
+class TestQuantileTieBreaking:
+    """Verify that highly discrete score distributions are split correctly."""
+
+    def _make_discrete_ds(self, n: int, score_value: float) -> datasets.Dataset:
+        """All items share the same score — worst-case scenario for ties."""
+        return datasets.Dataset.from_dict({
+            "text": [f"joke {i}" for i in range(n)],
+            "lang": ["en"] * n,
+            "score": [score_value] * n,
+            "source": ["rjokes"] * n,
+        })
+
+    def test_all_same_score_respects_quantile_limits(self):
+        """When every score is identical, high+low should still be ~60%, not 100%."""
+        n = 100
+        unified = {"rjokes": self._make_discrete_ds(n, 0.5)}
+        result = format_reward_pairs(unified, allocation=_NO_CAP_ALLOCATION)
+        total = len(result["train"]) + len(result["validation"])
+        # bottom 30% + top 30% = 60 items; pairs = min(chosen*3, rejected)
+        # with 30 high (×3=90 chosen pool) and 30 low (=30 rejected) → 30 pairs
+        assert total == 30
+
+    def test_few_unique_values_stays_within_bounds(self):
+        """Simulates rJokes-like distribution: 12 discrete score levels, heavy at 0."""
+        scores = (
+            [0.0] * 350 + [0.05] * 240 + [0.1] * 180 +
+            [0.15] * 100 + [0.2] * 60 + [0.25] * 35 +
+            [0.3] * 20 + [0.35] * 10 + [0.4] * 3 +
+            [0.45] * 1 + [0.5] * 1
+        )
+        n = len(scores)
+        ds = datasets.Dataset.from_dict({
+            "text": [f"joke {i}" for i in range(n)],
+            "lang": ["en"] * n,
+            "score": scores,
+            "source": ["rjokes"] * n,
+        })
+        unified = {"rjokes": ds}
+        result = format_reward_pairs(unified, allocation=_NO_CAP_ALLOCATION)
+        total = len(result["train"]) + len(result["validation"])
+        n_low = int(n * 0.3)   # 300
+        n_high = n - int(n * 0.7)  # 300
+        max_expected = min(n_high * 3, n_low)
+        assert total <= max_expected
+        assert total > 0

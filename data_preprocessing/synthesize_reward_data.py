@@ -58,22 +58,26 @@ BATCH_SIZE = 100
 
 _BORING_TEXT_BATCH_PROMPTS = {
     "en": (
-        f"Generate exactly {BATCH_SIZE} short, plain, boring statements that are NOT funny at all. "
+        f"Generate exactly {BATCH_SIZE} short, plain, boring statements in English. "
+        "They must NOT be funny at all. "
         "Each statement should be 1-2 sentences, like something you'd find in a random "
         "description or observation. No humor, no wordplay, no punchline. "
-        "Each statement must be unique and different from the others."
+        "Each statement must be unique and different from the others. "
+        "IMPORTANT: Every statement MUST be written in English."
     ),
     "zh": (
-        f"生成恰好{BATCH_SIZE}条简短、平淡、无聊的陈述，完全不好笑。"
+        f"生成恰好{BATCH_SIZE}条简短、平淡、无聊的中文陈述，完全不好笑。"
         "每条1-2句话，像日常描述或观察记录。不要幽默、不要双关、不要笑点。"
         "每条陈述必须互不相同。"
+        "重要：每一条陈述都必须使用中文书写，不要使用英文或其他语言。"
     ),
     "es": (
-        f"Genera exactamente {BATCH_SIZE} declaraciones cortas, simples y aburridas "
-        "que NO sean graciosas en absoluto. "
+        f"Genera exactamente {BATCH_SIZE} declaraciones cortas, simples y aburridas en español. "
+        "NO deben ser graciosas en absoluto. "
         "Cada una debe ser 1-2 oraciones, como una descripción cotidiana. "
         "Sin humor, sin juegos de palabras. "
-        "Cada declaración debe ser única y diferente de las demás."
+        "Cada declaración debe ser única y diferente de las demás. "
+        "IMPORTANTE: Cada declaración DEBE estar escrita en español, no en inglés."
     ),
 }
 
@@ -196,10 +200,22 @@ def load_cfun_jokes(n_samples: int, seed: int = 42) -> list[str]:
     return selected
 
 
+_SCORE_THRESHOLDS = {
+    # rJokes raw scores are Reddit upvotes, normalized as min(raw, 11) / 11.
+    # raw >= 5 → normalized >= 5/11 ≈ 0.4545.  Selects the top ~8% of
+    # jokes and yields a large enough pool for synthesis (~34K candidates).
+    "en": round(5 / 11, 4),
+    # HAHA funniness_average is normalized as avg / 5.0.
+    # Using 0.3 (raw avg >= 1.5/5) keeps most genuinely humorous tweets
+    # while excluding the very lowest quality, giving a large enough pool.
+    "es": 0.3,
+}
+
+
 def load_high_score_jokes(
     lang: str,
     n_samples: int,
-    score_threshold: float = 0.7,
+    score_threshold: float | None = None,
     seed: int = 42,
 ) -> list[str]:
     """Load high-score jokes for a given language from unified_all.jsonl.
@@ -208,6 +224,8 @@ def load_high_score_jokes(
         lang: Language code ("en" or "es").
         n_samples: Number of joke texts to return.
         score_threshold: Minimum normalized score to qualify as high-score.
+            If None, uses the per-language default from _SCORE_THRESHOLDS
+            (0.25 for en, 0.3 for es).
         seed: Random seed for reproducible sampling.
 
     Returns:
@@ -216,6 +234,8 @@ def load_high_score_jokes(
     Raises:
         FileNotFoundError: If unified_all.jsonl does not exist.
     """
+    if score_threshold is None:
+        score_threshold = _SCORE_THRESHOLDS.get(lang, 0.25)
     if not UNIFIED_ALL_FILE.exists():
         raise FileNotFoundError(
             f"{UNIFIED_ALL_FILE} does not exist. Run --stage parse first."
@@ -256,8 +276,36 @@ def load_high_score_jokes(
 # Rejected Sample Generation
 # ============================================================
 
-def _filter_boring_response(response: str) -> bool:
-    """Check if a generated boring statement passes quality filters."""
+def _check_language_match(text: str, lang: str) -> bool:
+    """Verify the generated text is in the expected language using langid.
+
+    Restricts detection to the three target languages (en/zh/es) for
+    improved accuracy. No confidence threshold is applied: langid's
+    raw log-probability scales linearly with text length (longer text →
+    more negative value), making absolute thresholds meaningless across
+    samples of different lengths. The top-1 prediction is sufficient.
+
+    Args:
+        text: Generated text to check.
+        lang: Expected language code ("en", "zh", "es").
+
+    Returns:
+        True if the text is classified as the expected language.
+    """
+    import langid
+    langid.set_languages(["en", "zh", "es"])
+    detected_lang, _ = langid.classify(text)
+    return detected_lang == lang
+
+
+def _filter_boring_response(response: str, lang: str | None = None) -> bool:
+    """Check if a generated boring statement passes quality filters.
+
+    Args:
+        response: Generated text to check.
+        lang: Expected language code. If provided, filters out texts
+              that don't match the expected language.
+    """
     if not response or not response.strip():
         return False
     text = response.strip()
@@ -273,6 +321,8 @@ def _filter_boring_response(response: str) -> bool:
     for pattern in refusal_patterns:
         if pattern in text_lower:
             return False
+    if lang and not _check_language_match(text, lang):
+        return False
     return True
 
 
@@ -319,7 +369,7 @@ def generate_boring_texts(
         raw_items = _call_gemini_batch(client, prompt)
         total_generated += len(raw_items)
 
-        passed = [item for item in raw_items if _filter_boring_response(item)]
+        passed = [item for item in raw_items if _filter_boring_response(item, lang)]
         batch_filtered = len(raw_items) - len(passed)
         total_filtered += batch_filtered
         results.extend(passed)
