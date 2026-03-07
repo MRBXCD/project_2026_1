@@ -85,7 +85,7 @@ os.environ["WANDB_PROJECT"] = "proj_2026_1-grpo"
 
 def load_sft_merged_model(
     base_model_name: str,
-    sft_adapter_path: str | Path,
+    sft_adapter_repo: str | Path,
 ) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Load the base model, merge the SFT LoRA adapter, and return a plain model.
 
@@ -111,8 +111,9 @@ def load_sft_merged_model(
     Args:
         base_model_name: HuggingFace model name or local path.
             e.g., "Qwen/Qwen3-8B"
-        sft_adapter_path: Path to the SFT LoRA adapter directory.
-            e.g., "checkpoints/sft/final"
+        sft_adapter_repo: Local path OR HuggingFace Hub repo ID for the
+            SFT LoRA adapter. e.g., "MRBSTUDIO/Humor-Qwen3-8B-SFT" or
+            "checkpoints/sft/final"
 
     Returns:
         tuple: (model, tokenizer)
@@ -120,12 +121,14 @@ def load_sft_merged_model(
             - tokenizer: Configured with padding_side="left".
 
     Raises:
-        FileNotFoundError: If sft_adapter_path does not exist.
+        FileNotFoundError: If sft_adapter_repo is a local path that does not exist.
     """
-    sft_adapter_path = Path(sft_adapter_path)
-    if not sft_adapter_path.exists():
+    sft_adapter_repo_str = str(sft_adapter_repo)
+    is_local = Path(sft_adapter_repo).exists()
+
+    if not is_local and Path(sft_adapter_repo).is_absolute():
         raise FileNotFoundError(
-            f"SFT adapter not found at {sft_adapter_path}. "
+            f"SFT adapter not found at {sft_adapter_repo}. "
             f"Please run SFT training first: python -m sft.train_sft"
         )
 
@@ -145,9 +148,9 @@ def load_sft_merged_model(
     )
     print(f"  Base model parameters: {model.num_parameters() / 1e9:.1f}B")
 
-    # Load SFT LoRA adapter onto the base model
-    print(f"Loading SFT adapter: {sft_adapter_path}")
-    model = PeftModel.from_pretrained(model, str(sft_adapter_path))
+    # Load SFT LoRA adapter (local path or Hub repo ID both accepted by PeftModel)
+    print(f"Loading SFT adapter: {sft_adapter_repo_str}")
+    model = PeftModel.from_pretrained(model, sft_adapter_repo_str)
 
     # Merge LoRA weights into base model and discard adapter structure.
     # After this call, model is a plain PreTrainedModel (not PeftModel)
@@ -408,8 +411,8 @@ def main():
         help="Base model name or path (default: Qwen/Qwen3-8B)",
     )
     parser.add_argument(
-        "--sft_adapter_path", type=str, default=str(SFT_ADAPTER_DIR),
-        help="Path to the SFT LoRA adapter directory",
+        "--sft_adapter_repo", type=str, default="MRBSTUDIO/Humor-Qwen3-8B-SFT",
+        help="HuggingFace Hub repo ID or local path for the SFT LoRA adapter.",
     )
     parser.add_argument(
         "--num_generations", type=int, default=16,
@@ -463,20 +466,16 @@ def main():
              "Mutually exclusive with --use_humor_judge.",
     )
     parser.add_argument(
-        "--reward_model_path", type=str,
-        default=str(PROJECT_ROOT / "checkpoints" / "reward_model" / "final"),
-        help="Path to the trained reward model checkpoint "
-             "(default: checkpoints/reward_model/final)",
+        "--reward_model_repo", type=str,
+        default="MRBSTUDIO/Humor-Reward-Model-1.7B",
+        help="HuggingFace Hub repo ID or local path for the trained reward model "
+             "(default: 'MRBSTUDIO/Humor-Reward-Model-1.7B')",
     )
     parser.add_argument(
-        "--hf_repo", type=str, default="MRBSTUDIO/humor-qwen3-8b",
-        help="HuggingFace Hub repository ID (e.g. 'username/humor-qwen3-8b'). "
+        "--grpo_repo", type=str, default="MRBSTUDIO/Humor-Qwen3-8B-GRPO",
+        help="HuggingFace Hub repository ID for the final GRPO model "
+             "(default: 'MRBSTUDIO/Humor-Qwen3-8B-GRPO'). "
              "Leave empty to skip upload. Requires HF_TOKEN environment variable.",
-    )
-    parser.add_argument(
-        "--hf_path_in_repo", type=str, default="grpo/reward_model",
-        help="Subfolder path inside the HF repository to upload the model to "
-             "(default: 'grpo/reward_model', resulting in repo/grpo/reward_model/).",
     )
     parser.add_argument(
         "--tag", type=str, default="normal",
@@ -493,7 +492,7 @@ def main():
     print("=" * 60)
     model, tokenizer = load_sft_merged_model(
         base_model_name=args.model_name,
-        sft_adapter_path=args.sft_adapter_path,
+        sft_adapter_repo=args.sft_adapter_repo,
     )
 
     # ---- Step 2: Load Dataset ----
@@ -533,7 +532,7 @@ def main():
     if args.use_reward_model:
         print("Step 5: Build reward function (Phase 2b: rules + reward model)")
         print("=" * 60)
-        batch_scorer = build_batch_reward_model_scorer(args.reward_model_path)
+        batch_scorer = build_batch_reward_model_scorer(args.reward_model_repo)
         reward_fn = build_reward_fn(batch_humor_scorer=batch_scorer)
         print("  Reward: format + keyword + relevance + humor (trained reward model)")
     elif args.use_humor_judge:
@@ -578,26 +577,25 @@ def main():
     print(f"  Model saved to: {final_dir}")
 
     # ---- Step 9: Upload to HuggingFace Hub (optional) ----
-    if args.hf_repo:
+    if args.grpo_repo:
         print("\n" + "=" * 60)
         print(f"Step 9: Upload final model to HuggingFace Hub")
         print("=" * 60)
-        print(f"  Repository:    {args.hf_repo}")
-        print(f"  Path in repo:  {args.hf_path_in_repo}")
-        print(f"  Source:        {final_dir}")
+        print(f"  Repository: {args.grpo_repo}")
+        print(f"  Source:     {final_dir}")
         api = HfApi()
         commit_message = f"grpo: {grpo_config.run_name}"
         api.upload_folder(
             folder_path=str(final_dir),
-            repo_id=args.hf_repo,
-            path_in_repo=args.hf_path_in_repo,
+            repo_id=args.grpo_repo,
+            path_in_repo="",
             repo_type="model",
             commit_message=commit_message,
         )
         print(f"  Commit message: {commit_message}")
-        print(f"  Uploaded to: https://huggingface.co/{args.hf_repo}/tree/main/{args.hf_path_in_repo}")
+        print(f"  Uploaded to: https://huggingface.co/{args.grpo_repo}")
     else:
-        print("\nStep 9: Skipped (--hf_repo not set)")
+        print("\nStep 9: Skipped (--grpo_repo not set)")
 
     print("\nGRPO training complete.")
 

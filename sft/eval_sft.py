@@ -419,8 +419,9 @@ def main():
                         help="评估模式")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-8B",
                         help="基座模型名")
-    parser.add_argument("--adapter_path", type=str, default=str(SFT_ADAPTER_DIR),
-                        help="SFT LoRA adapter 路径")
+    parser.add_argument("--sft_adapter_repo", type=str,
+                        default="MRBSTUDIO/Humor-Qwen3-8B-SFT",
+                        help="SFT LoRA adapter 的 HuggingFace Hub repo ID 或本地路径")
     parser.add_argument("--n_samples", type=int, default=20,
                         help="生成对比的样本数 (默认 20)")
     parser.add_argument("--benchmark_tasks", type=str,
@@ -443,7 +444,7 @@ def main():
         print("=" * 60)
         print("评估: 生成对比 (Base vs SFT)")
         print("=" * 60)
-        run_generation_eval(args.model_name, args.adapter_path, args.n_samples)
+        run_generation_eval(args.model_name, args.sft_adapter_repo, args.n_samples)
 
     if args.mode in ("benchmark", "all"):
         print("\n" + "=" * 60)
@@ -451,7 +452,7 @@ def main():
         print("=" * 60)
         run_benchmark_eval(
             model_name=args.model_name,
-            adapter_path=args.adapter_path,
+            adapter_path=args.sft_adapter_repo,
             tasks=args.benchmark_tasks,
             num_fewshot=args.num_fewshot,
             batch_size=args.benchmark_batch_size,

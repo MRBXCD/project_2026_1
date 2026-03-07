@@ -29,6 +29,7 @@ from pathlib import Path
 
 import torch
 from datasets import load_dataset
+from huggingface_hub import HfApi
 from peft import LoraConfig, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
@@ -169,6 +170,7 @@ def build_training_args(
     learning_rate: float = 2e-4,
     max_length: int = 512,
     report_to: str = "wandb",
+    run_name: str | None = None,
 ) -> SFTConfig:
     """构建 SFT 训练配置。
 
@@ -233,6 +235,7 @@ def build_training_args(
 
         # --- 其他 ---
         report_to=report_to,
+        run_name=run_name,
         seed=42,
     )
 
@@ -261,6 +264,14 @@ def main():
     parser.add_argument("--report_to", type=str, default="wandb",
                         choices=["wandb", "tensorboard", "none"],
                         help="实验追踪工具 (默认 wandb)")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Wandb run name and HF commit message tag (optional)")
+    parser.add_argument(
+        "--sft_repo", type=str, default="MRBSTUDIO/Humor-Qwen3-8B-SFT",
+        help="HuggingFace Hub repository ID for the trained SFT adapter "
+             "(default: 'MRBSTUDIO/Humor-Qwen3-8B-SFT'). "
+             "Leave empty to skip upload. Requires HF_TOKEN environment variable.",
+    )
     args = parser.parse_args()
 
     # 1. 加载模型和 tokenizer
@@ -292,6 +303,7 @@ def main():
         learning_rate=args.lr,
         max_length=args.max_length,
         report_to=args.report_to,
+        run_name=args.run_name,
     )
 
     # 5. 创建 SFTTrainer 并启动训练
@@ -318,6 +330,28 @@ def main():
     trainer.save_model(str(final_dir))
     tokenizer.save_pretrained(str(final_dir))
     print(f"  模型已保存到: {final_dir}")
+
+    # 7. 上传到 HuggingFace Hub (可选)
+    if args.sft_repo:
+        print("\n" + "=" * 60)
+        print("Step 7: 上传模型到 HuggingFace Hub")
+        print("=" * 60)
+        print(f"  Repository: {args.sft_repo}")
+        print(f"  Source:     {final_dir}")
+        api = HfApi()
+        run_label = args.run_name or training_args.run_name or "sft"
+        commit_message = f"sft: {run_label}"
+        api.upload_folder(
+            folder_path=str(final_dir),
+            repo_id=args.sft_repo,
+            path_in_repo="",
+            repo_type="model",
+            commit_message=commit_message,
+        )
+        print(f"  Commit message: {commit_message}")
+        print(f"  Uploaded to: https://huggingface.co/{args.sft_repo}")
+    else:
+        print("\nStep 7: 跳过 (--sft_repo 未设置)")
 
     print("\nSFT 训练完成。")
 

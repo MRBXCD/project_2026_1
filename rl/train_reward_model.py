@@ -293,14 +293,10 @@ def main():
         help="Experiment tracking backend (default: wandb)",
     )
     parser.add_argument(
-        "--hf_repo", type=str, default="MRBSTUDIO/humor-qwen3-8b",
-        help="HuggingFace Hub repository ID (e.g. 'username/humor-qwen3-8b'). "
+        "--hf_repo", type=str, default="MRBSTUDIO/Humor-Reward-Model-1.7B",
+        help="HuggingFace Hub repository ID to upload the trained model to "
+             "(default: 'MRBSTUDIO/Humor-Reward-Model-1.7B'). "
              "Leave empty to skip upload. Requires HF_TOKEN environment variable.",
-    )
-    parser.add_argument(
-        "--hf_path_in_repo", type=str, default="reward_model",
-        help="Subfolder path inside the HF repository to upload the model to "
-             "(default: 'reward_model', resulting in repo/reward_model/).",
     )
     parser.add_argument(
         "--early_stopping_patience", type=int, default=7,
@@ -391,20 +387,19 @@ def main():
         print("\n" + "=" * 60)
         print(f"Step 7: Upload best model to HuggingFace Hub")
         print("=" * 60)
-        print(f"  Repository:    {args.hf_repo}")
-        print(f"  Path in repo:  {args.hf_path_in_repo}")
-        print(f"  Source:        {final_dir}")
+        print(f"  Repository: {args.hf_repo}")
+        print(f"  Source:     {final_dir}")
         api = HfApi()
         commit_message = f"reward_model: {reward_config.run_name}"
         api.upload_folder(
             folder_path=str(final_dir),
             repo_id=args.hf_repo,
-            path_in_repo=args.hf_path_in_repo,
+            path_in_repo="",
             repo_type="model",
             commit_message=commit_message,
         )
         print(f"  Commit message: {commit_message}")
-        print(f"  Uploaded to: https://huggingface.co/{args.hf_repo}/tree/main/{args.hf_path_in_repo}")
+        print(f"  Uploaded to: https://huggingface.co/{args.hf_repo}")
     else:
         print("\nStep 7: Skipped (--hf_repo not set)")
 

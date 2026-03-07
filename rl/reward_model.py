@@ -41,11 +41,13 @@ Dependencies:
     - transformers, peft, torch
 """
 
+import json
 import math
 from pathlib import Path
 from typing import Callable
 
 import torch
+from huggingface_hub import file_exists as hf_file_exists
 from peft import PeftModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -61,6 +63,21 @@ INFERENCE_BATCH_SIZE = 32
 
 
 # ============================================================
+# Helpers
+# ============================================================
+
+def _is_hub_repo(model_path: str | Path) -> bool:
+    """Return True if model_path looks like a HuggingFace Hub repo ID.
+
+    A Hub repo ID has the form "owner/model-name" and is NOT an existing
+    local directory.  Local paths (absolute or relative) are detected by
+    checking whether the path exists on disk.
+    """
+    local = Path(model_path)
+    return not local.exists()
+
+
+# ============================================================
 # Model Loading
 # ============================================================
 
@@ -70,28 +87,31 @@ def _load_reward_model(
 ) -> tuple[AutoModelForSequenceClassification, AutoTokenizer]:
     """Load the trained reward model (base + LoRA adapter).
 
-    The reward model checkpoint directory contains either:
-    - A LoRA adapter (adapter_config.json + adapter_model.safetensors)
-      that was trained on top of a base model, plus the score head
-      weights saved via modules_to_save. In this case, we load the base
-      model as AutoModelForSequenceClassification, then load the adapter.
-    - A full merged model (if the user merged the adapter).
+    Supports both local checkpoint directories and HuggingFace Hub repo IDs
+    (e.g. "MRBSTUDIO/Humor-Reward-Model-1.7B").
 
-    The function auto-detects which case applies by checking for
-    adapter_config.json.
+    The checkpoint contains either:
+    - A LoRA adapter (adapter_config.json present): load base model then
+      apply the adapter via PeftModel.
+    - A full merged model: load directly with AutoModelForSequenceClassification.
+
+    For local paths the presence of adapter_config.json is checked on disk.
+    For Hub repo IDs it is checked via the Hub API (huggingface_hub.file_exists).
 
     Args:
-        model_path: Path to the reward model checkpoint directory.
+        model_path: Local directory path OR HuggingFace Hub repo ID.
         device: Target device. If None, uses "cuda" if available.
 
     Returns:
         tuple: (model, tokenizer) with model in eval mode on the target device.
 
     Raises:
-        FileNotFoundError: If model_path does not exist.
+        FileNotFoundError: If a local model_path does not exist.
     """
-    model_path = Path(model_path)
-    if not model_path.exists():
+    is_hub = _is_hub_repo(model_path)
+    model_path_str = str(model_path)
+
+    if not is_hub and not Path(model_path).exists():
         raise FileNotFoundError(
             f"Reward model not found at {model_path}. "
             f"Please train it first: python -m rl.train_reward_model"
@@ -100,13 +120,28 @@ def _load_reward_model(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    adapter_config = model_path / "adapter_config.json"
-    is_peft_adapter = adapter_config.exists()
+    # Detect whether this is a PEFT adapter or a merged model.
+    if is_hub:
+        is_peft_adapter = hf_file_exists(
+            repo_id=model_path_str,
+            filename="adapter_config.json",
+            repo_type="model",
+        )
+    else:
+        is_peft_adapter = (Path(model_path) / "adapter_config.json").exists()
 
     if is_peft_adapter:
-        import json
-        with open(adapter_config) as f:
-            config = json.load(f)
+        if is_hub:
+            from huggingface_hub import hf_hub_download
+            adapter_config_path = hf_hub_download(
+                repo_id=model_path_str,
+                filename="adapter_config.json",
+            )
+            with open(adapter_config_path) as f:
+                config = json.load(f)
+        else:
+            with open(Path(model_path) / "adapter_config.json") as f:
+                config = json.load(f)
         base_model_name = config.get("base_model_name_or_path", "")
 
         print(f"Loading reward model base: {base_model_name}")
@@ -118,24 +153,24 @@ def _load_reward_model(
             attn_implementation="flash_attention_2",
         )
 
-        print(f"Loading reward model adapter: {model_path}")
-        model = PeftModel.from_pretrained(base_model, str(model_path))
+        print(f"Loading reward model adapter: {model_path_str}")
+        model = PeftModel.from_pretrained(base_model, model_path_str)
 
         tokenizer = AutoTokenizer.from_pretrained(
-            str(model_path),
+            model_path_str,
             padding_side="right",
         )
     else:
-        print(f"Loading merged reward model: {model_path}")
+        print(f"Loading merged reward model: {model_path_str}")
         model = AutoModelForSequenceClassification.from_pretrained(
-            str(model_path),
+            model_path_str,
             num_labels=1,
             torch_dtype=torch.bfloat16,
             device_map=device,
             attn_implementation="flash_attention_2",
         )
         tokenizer = AutoTokenizer.from_pretrained(
-            str(model_path),
+            model_path_str,
             padding_side="right",
         )
 
