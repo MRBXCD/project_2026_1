@@ -4,7 +4,7 @@ Reward Model Hard-Negative Data Synthesis Script
 
 This script synthesizes preference pairs for reward model training by:
     1. Loading positive (chosen) joke samples:
-       - Chinese: Rule-filtered from local pure_jokes.csv (pre-extracted CFun jokes)
+       - Chinese: Load cfun records directly from unified_all.jsonl
        - English: High-score jokes from rJokes (via unified_all.jsonl)
        - Spanish: High-score jokes from HAHA (via unified_all.jsonl)
     2. Generating negative (rejected) samples via Gemini API:
@@ -29,7 +29,6 @@ Environment Variables:
 """
 
 import argparse
-import csv
 import json
 import random
 import time
@@ -47,7 +46,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNTHESIZED_DIR = PROJECT_ROOT / "data" / "synthesized"
 PREPROCESSED_DIR = PROJECT_ROOT / "data" / "preprocessed"
 UNIFIED_ALL_FILE = PREPROCESSED_DIR / "unified_all.jsonl"
-CFUN_JOKES_CSV = PROJECT_ROOT / "data" / "cfun" / "pure_jokes.csv"
 
 
 # ============================================================
@@ -147,11 +145,7 @@ def _call_gemini_batch(
 # ============================================================
 
 def load_cfun_jokes(n_samples: int, seed: int = 42) -> list[str]:
-    """Load and filter CFun jokes from pre-extracted pure_jokes.csv.
-
-    Applies rule-based quality filters: deduplication, length filtering,
-    and whitespace stripping. No LLM-as-Judge or instruction prefix
-    filtering needed — the CSV already contains standalone joke texts.
+    """Load Chinese chosen jokes from unified_all.jsonl source='cfun'.
 
     Args:
         n_samples: Number of joke texts to return.
@@ -161,42 +155,39 @@ def load_cfun_jokes(n_samples: int, seed: int = 42) -> list[str]:
         List of joke text strings.
 
     Raises:
-        FileNotFoundError: If pure_jokes.csv does not exist.
-        ValueError: If no jokes remain after filtering.
+        FileNotFoundError: If unified_all.jsonl does not exist.
+        ValueError: If no cfun jokes are found.
     """
-    if not CFUN_JOKES_CSV.exists():
+    if not UNIFIED_ALL_FILE.exists():
         raise FileNotFoundError(
-            f"{CFUN_JOKES_CSV} does not exist. "
-            "Place the pre-extracted CFun jokes CSV at data/cfun/pure_jokes.csv."
+            f"{UNIFIED_ALL_FILE} does not exist. Run --stage parse first."
         )
 
-    with open(CFUN_JOKES_CSV, encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        next(reader)  # skip header
-        raw_jokes = [row[0] for row in reader if row]
+    candidates = []
+    with open(UNIFIED_ALL_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if record.get("source") != "cfun":
+                continue
+            text = record.get("text")
+            if isinstance(text, str) and text:
+                candidates.append(text)
 
-    print(f"  CFun CSV raw: {len(raw_jokes)} rows")
+    print(f"  cfun (zh): {len(candidates)} jokes from unified_all.jsonl")
 
-    unique_jokes = list(dict.fromkeys(raw_jokes))
-    print(f"  CFun after dedup: {len(unique_jokes)} rows")
-
-    filtered = [
-        text.strip()
-        for text in unique_jokes
-        if text.strip() and 10 <= len(text.strip()) <= 500
-    ]
-    print(f"  CFun after quality filter: {len(filtered)} rows")
-
-    if not filtered:
+    if not candidates:
         raise ValueError(
-            "No CFun jokes passed filtering. Check data/cfun/pure_jokes.csv content."
+            "No cfun jokes found in unified_all.jsonl. Run --stage parse first."
         )
 
     rng = random.Random(seed)
-    rng.shuffle(filtered)
+    rng.shuffle(candidates)
 
-    selected = filtered[:n_samples]
-    print(f"  CFun selected: {len(selected)} jokes")
+    selected = candidates[:n_samples]
+    print(f"  cfun (zh): selected {len(selected)} jokes")
     return selected
 
 

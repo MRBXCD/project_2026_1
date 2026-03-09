@@ -184,11 +184,14 @@ def run_format_sft() -> None:
 # Stage 3: format_grpo — SemEval Data → GRPO Prompt
 # ============================================================
 
-def run_format_grpo() -> None:
+def run_format_grpo(eval_ratio: float = 0.0, seed: int = 42) -> None:
     """Generate GRPO prompt from SemEval data.
 
     Input: data/preprocessed/semeval.jsonl (Output of parse stage)
-    Output: data/grpo/grpo_prompts.jsonl
+    Output:
+        - data/grpo/grpo_prompts_train.jsonl  (when eval_ratio > 0)
+        - data/grpo/grpo_prompts_eval.jsonl   (when eval_ratio > 0)
+        - data/grpo/grpo_prompts.jsonl        (when eval_ratio == 0, full dataset)
     """
     GRPO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -202,13 +205,21 @@ def run_format_grpo() -> None:
     )
     print(f"  Loaded: {SEMEVAL_FILE} ({len(semeval_ds)} rows)")
 
-    # 2. Call formatter
-    grpo_ds = format_grpo(semeval_ds)
+    # 2. Call formatter (with optional split)
+    train_ds, eval_ds = format_grpo(semeval_ds, eval_ratio=eval_ratio, seed=seed)
 
     # 3. Save
-    output_path = GRPO_DIR / "grpo_prompts.jsonl"
-    grpo_ds.to_json(str(output_path))
-    print(f"  Saved: {output_path} ({len(grpo_ds)} rows)")
+    if eval_ds is not None:
+        train_path = GRPO_DIR / "grpo_prompts_train.jsonl"
+        eval_path = GRPO_DIR / "grpo_prompts_eval.jsonl"
+        train_ds.to_json(str(train_path))
+        eval_ds.to_json(str(eval_path))
+        print(f"  Saved: {train_path} ({len(train_ds)} rows)")
+        print(f"  Saved: {eval_path} ({len(eval_ds)} rows)")
+    else:
+        output_path = GRPO_DIR / "grpo_prompts.jsonl"
+        train_ds.to_json(str(output_path))
+        print(f"  Saved: {output_path} ({len(train_ds)} rows)")
 
 
 # ============================================================
@@ -314,6 +325,11 @@ def main():
         help="synthesize stage: Number of keywords to synthesize per language (default 100)",
     )
     parser.add_argument(
+        "--eval_ratio", type=float, default=0.2,
+        help="format_grpo stage: Fraction of SemEval data reserved for evaluation "
+             "(default 0.2). Set to 0 to disable splitting.",
+    )
+    parser.add_argument(
         "--seed", type=int, default=42,
         help="Random seed (default 42)",
     )
@@ -349,7 +365,7 @@ def main():
         print("=" * 60)
         print("Stage: format_grpo (SemEval → GRPO Prompt)")
         print("=" * 60)
-        run_format_grpo()
+        run_format_grpo(eval_ratio=args.eval_ratio, seed=args.seed)
 
     if stage == "format_reward" or run_all:
         print("=" * 60)

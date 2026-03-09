@@ -1,6 +1,5 @@
 """Tests for data_preprocessing/synthesize_reward_data.py — pure logic functions."""
 
-import csv
 import json
 import re
 from unittest.mock import patch, MagicMock
@@ -22,17 +21,8 @@ LANG_CHECK_PATCH = "data_preprocessing.synthesize_reward_data._check_language_ma
 
 
 # ============================================================
-# Helpers
+# Helper
 # ============================================================
-
-def _write_cfun_csv(path, jokes: list[str]) -> None:
-    """Write a mock pure_jokes.csv with BOM header matching real data."""
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["joke"])
-        for joke in jokes:
-            writer.writerow([joke])
-
 
 def _make_mock_unified_jsonl(path, records: list[dict]) -> None:
     """Write mock unified_all.jsonl file."""
@@ -46,82 +36,80 @@ def _make_mock_unified_jsonl(path, records: list[dict]) -> None:
 # ============================================================
 
 class TestLoadCfunJokes:
-    def test_deduplication(self, tmp_path):
-        """Duplicate rows in CSV are deduplicated."""
-        csv_path = tmp_path / "pure_jokes.csv"
-        _write_cfun_csv(csv_path, [
-            "这是一个重复的笑话，长度足够通过过滤",
-            "这是一个重复的笑话，长度足够通过过滤",
-            "这是一个重复的笑话，长度足够通过过滤",
-            "这是另一个不同的笑话，同样足够长度通过",
+    def test_loads_only_cfun_source(self, tmp_path):
+        """Only source=cfun records are selected for zh chosen pool."""
+        unified_path = tmp_path / "unified_all.jsonl"
+        _make_mock_unified_jsonl(unified_path, [
+            {"text": "中文笑话1", "lang": "zh", "score": None, "source": "cfun"},
+            {"text": "中文笑话2", "lang": "zh", "score": None, "source": "cfun"},
+            {"text": "中文非cfun", "lang": "zh", "score": 0.9, "source": "chinese_humor"},
+            {"text": "English joke", "lang": "en", "score": 0.7, "source": "rjokes"},
         ])
 
         with patch(
-            "data_preprocessing.synthesize_reward_data.CFUN_JOKES_CSV",
-            csv_path,
+            "data_preprocessing.synthesize_reward_data.UNIFIED_ALL_FILE",
+            unified_path,
         ):
             jokes = load_cfun_jokes(n_samples=100)
 
         assert len(jokes) == 2
-
-    def test_length_filter(self, tmp_path):
-        """Texts shorter than 10 or longer than 500 chars are excluded."""
-        csv_path = tmp_path / "pure_jokes.csv"
-        _write_cfun_csv(csv_path, [
-            "短",
-            "…",
-            "这是一个合格的笑话，长度刚好在范围内",
-            "很长" * 300,
-        ])
-
-        with patch(
-            "data_preprocessing.synthesize_reward_data.CFUN_JOKES_CSV",
-            csv_path,
-        ):
-            jokes = load_cfun_jokes(n_samples=100)
-
-        assert len(jokes) == 1
-        assert "合格" in jokes[0]
+        assert all("中文" in text for text in jokes)
 
     def test_samples_correct_count(self, tmp_path):
         """When pool is large enough, returns exactly n_samples."""
-        csv_path = tmp_path / "pure_jokes.csv"
-        _write_cfun_csv(csv_path, [
-            f"这是第{i}个笑话，有足够的长度来通过过滤" for i in range(50)
-        ])
+        records = [
+            {"text": f"这是第{i}个笑话，有足够长度用于采样", "lang": "zh", "score": None, "source": "cfun"}
+            for i in range(50)
+        ]
+        unified_path = tmp_path / "unified_all.jsonl"
+        _make_mock_unified_jsonl(unified_path, records)
 
         with patch(
-            "data_preprocessing.synthesize_reward_data.CFUN_JOKES_CSV",
-            csv_path,
+            "data_preprocessing.synthesize_reward_data.UNIFIED_ALL_FILE",
+            unified_path,
         ):
             jokes = load_cfun_jokes(n_samples=10)
 
         assert len(jokes) == 10
 
-    def test_file_not_found(self, tmp_path):
-        """Missing CSV raises FileNotFoundError."""
+    def test_keeps_preprocessed_text_without_extra_cleaning(self, tmp_path):
+        """No extra dedup/length cleanup is applied in synthesize stage."""
+        unified_path = tmp_path / "unified_all.jsonl"
+        _make_mock_unified_jsonl(unified_path, [
+            {"text": "重复文本", "lang": "zh", "score": None, "source": "cfun"},
+            {"text": "重复文本", "lang": "zh", "score": None, "source": "cfun"},
+            {"text": "短", "lang": "zh", "score": None, "source": "cfun"},
+        ])
+
         with patch(
-            "data_preprocessing.synthesize_reward_data.CFUN_JOKES_CSV",
-            tmp_path / "nonexistent.csv",
+            "data_preprocessing.synthesize_reward_data.UNIFIED_ALL_FILE",
+            unified_path,
+        ):
+            jokes = load_cfun_jokes(n_samples=100, seed=0)
+
+        assert len(jokes) == 3
+
+    def test_file_not_found(self, tmp_path):
+        """Missing unified_all.jsonl raises FileNotFoundError."""
+        with patch(
+            "data_preprocessing.synthesize_reward_data.UNIFIED_ALL_FILE",
+            tmp_path / "nonexistent.jsonl",
         ):
             with pytest.raises(FileNotFoundError):
                 load_cfun_jokes(n_samples=10)
 
     def test_empty_after_filter(self, tmp_path):
-        """All rows filtered out raises ValueError."""
-        csv_path = tmp_path / "pure_jokes.csv"
-        _write_cfun_csv(csv_path, [
-            "短",
-            "…",
-            "",
-            "！",
+        """No cfun records raises ValueError."""
+        unified_path = tmp_path / "unified_all.jsonl"
+        _make_mock_unified_jsonl(unified_path, [
+            {"text": "English joke", "lang": "en", "score": 0.8, "source": "rjokes"},
         ])
 
         with patch(
-            "data_preprocessing.synthesize_reward_data.CFUN_JOKES_CSV",
-            csv_path,
+            "data_preprocessing.synthesize_reward_data.UNIFIED_ALL_FILE",
+            unified_path,
         ):
-            with pytest.raises(ValueError, match="No CFun jokes passed filtering"):
+            with pytest.raises(ValueError, match="No cfun jokes found"):
                 load_cfun_jokes(n_samples=10)
 
 

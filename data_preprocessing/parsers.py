@@ -15,8 +15,9 @@ Unified Intermediate Format Schema:
 Conventions for each parser function:
     - Input: Raw data file path (str or Path)
     - Output: datasets.Dataset object, schema matches the unified format above
-    - Each parser only performs "read + field extraction + score normalization", no quality filtering
-      (Filtering logic is handled in pipeline.py to keep the parser's responsibility single)
+    - Most parsers perform "read + field extraction + score normalization".
+      CFun parser additionally performs instruction-based extraction and quality filtering
+      to keep CFun cleaning rules in one place.
 
 SemEval parser is an exception:
     - Its output schema differs from the Unified Intermediate Format
@@ -36,6 +37,7 @@ Dependencies:
 """
 
 import csv
+import re
 from pathlib import Path
 
 import datasets
@@ -53,6 +55,23 @@ RJOKES_SCORE_CAP = 11
 
 # Max score for Chinese Humor and HAHA (original is 1-5)
 HUMOR_SCORE_MAX = 5.0
+
+# CFun extraction and cleaning rules
+INSTR_HUMOR_DETECT = (
+    "以下是一段文本，请分析它是否具有幽默性。幽默性指该文本是否可能引起读者发笑，"
+    "或通过语言技巧（如双关语、讽刺、夸张、荒诞或逻辑上的意外）营造幽默效果。只需要输出“幽默”或“不幽默”。"
+)
+INSTR_HUMOR_REASON = (
+    "请阅读以下文字，分析其幽默的原因。幽默性指该文本是否可能引起读者发笑，"
+    "或通过语言技巧（如双关语、讽刺、夸张、荒诞或逻辑上的意外等等方式）营造幽默效果。请你写出以下文字幽默的原因："
+)
+INSTR_FIRST_SENTENCE_COMPLETION = (
+    "我将给你笑话的第一句话，请你生成整个笑话。笑话的第一句话如下："
+)
+CFUN_MIN_LEN = 10
+CFUN_MAX_LEN = 500
+CFUN_REMOVE_LABEL_PATTERN = re.compile(r"(?:标题|内容)\s*[：:]\s*")
+CFUN_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 # ============================================================
@@ -137,21 +156,21 @@ def parse_rjokes(data_dir: str | Path) -> datasets.Dataset:
 def parse_cfun(cache_dir: str | Path) -> datasets.Dataset:
     """Parse CFun dataset and output Unified Intermediate Format.
 
-    CFun is a Chinese humor dataset, cached in HuggingFace Arrow format.
-    Originally contains instruction / input / output columns, this task only uses output (joke text).
+    CFun is pulled directly from HuggingFace and cleaned in-parser to keep a single source
+    of truth for all downstream stages.
 
     Args:
-        cache_dir: CFun dataset HuggingFace cache directory path
-                   (i.e., cache_dir specified in datasets.load_dataset)
+        cache_dir: HuggingFace cache directory path used by datasets.load_dataset.
 
     Returns:
         datasets.Dataset: Unified Intermediate Format
-            - text (str): Joke text (from output field)
+            - text (str): Cleaned joke text
             - lang (str): Fixed as "zh"
             - score (float | None): Fixed as None (CFun has no score info)
             - source (str): Fixed as "cfun"
     """
     cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Load dataset from HuggingFace cache
     ds = datasets.load_dataset(
@@ -161,24 +180,97 @@ def parse_cfun(cache_dir: str | Path) -> datasets.Dataset:
     ds = ds["train"]
     print(f"  [cfun] Raw data: {len(ds)} rows")
 
-    # 2. Field mapping: use .map() to build unified format and remove original columns
-    def _transform(example):
-        return {
-            "text": example["output"],
-            "lang": "zh",
-            "score": None,
-            "source": "cfun",
-        }
+    def _extract_candidate(example: dict) -> str | None:
+        instruction = (example.get("instruction") or "").strip()
+        input_text = (example.get("input") or "").strip()
+        output_text = (example.get("output") or "").strip()
 
-    ds = ds.map(
-        _transform,
-        remove_columns=ds.column_names,  # Remove all original columns
-    )
+        if instruction.startswith("生成一个"):
+            return output_text
+        if instruction == INSTR_HUMOR_DETECT or instruction == INSTR_HUMOR_REASON:
+            return input_text
+        if instruction == INSTR_FIRST_SENTENCE_COMPLETION:
+            return f"{input_text}{output_text}"
+        return None
 
-    # 3. Basic cleaning: filter rows where text is empty
-    ds = ds.filter(lambda x: x["text"] is not None and x["text"].strip() != "")
+    def _clean_text(text: str) -> str:
+        normalized = CFUN_WHITESPACE_PATTERN.sub(" ", text).strip()
+        normalized = CFUN_REMOVE_LABEL_PATTERN.sub("", normalized)
+        return CFUN_WHITESPACE_PATTERN.sub(" ", normalized).strip()
 
-    return ds
+    def _has_meaningful_character(text: str) -> bool:
+        for char in text:
+            if char.isalnum() or "\u4e00" <= char <= "\u9fff":
+                return True
+        return False
+
+    # 2. Extract and filter records
+    stats = {
+        "matched_theme_keyword_output": 0,
+        "matched_humor_detect_reason_input": 0,
+        "matched_first_sentence_concat": 0,
+        "drop_unmatched_instruction": 0,
+        "drop_empty_candidate": 0,
+        "drop_too_short": 0,
+        "drop_too_long": 0,
+        "drop_non_meaningful_text": 0,
+        "drop_duplicate": 0,
+    }
+    seen_texts = set()
+    texts: list[str] = []
+    for example in ds:
+        candidate = _extract_candidate(example)
+        if candidate is None:
+            stats["drop_unmatched_instruction"] += 1
+            continue
+
+        instruction = (example.get("instruction") or "").strip()
+        if instruction.startswith("生成一个"):
+            stats["matched_theme_keyword_output"] += 1
+        elif instruction == INSTR_HUMOR_DETECT or instruction == INSTR_HUMOR_REASON:
+            stats["matched_humor_detect_reason_input"] += 1
+        elif instruction == INSTR_FIRST_SENTENCE_COMPLETION:
+            stats["matched_first_sentence_concat"] += 1
+
+        if not candidate:
+            stats["drop_empty_candidate"] += 1
+            continue
+
+        cleaned = _clean_text(candidate)
+        if len(cleaned) < CFUN_MIN_LEN:
+            stats["drop_too_short"] += 1
+            continue
+        if len(cleaned) > CFUN_MAX_LEN:
+            stats["drop_too_long"] += 1
+            continue
+        if not _has_meaningful_character(cleaned):
+            stats["drop_non_meaningful_text"] += 1
+            continue
+        if cleaned in seen_texts:
+            stats["drop_duplicate"] += 1
+            continue
+
+        seen_texts.add(cleaned)
+        texts.append(cleaned)
+
+    print(f"  [cfun] matched theme/keyword -> output: {stats['matched_theme_keyword_output']}")
+    print(f"  [cfun] matched detect/reason -> input: {stats['matched_humor_detect_reason_input']}")
+    print(f"  [cfun] matched first-sentence -> input+output: {stats['matched_first_sentence_concat']}")
+    print(f"  [cfun] dropped unmatched instruction: {stats['drop_unmatched_instruction']}")
+    print(f"  [cfun] dropped empty candidate: {stats['drop_empty_candidate']}")
+    print(f"  [cfun] dropped too short: {stats['drop_too_short']}")
+    print(f"  [cfun] dropped too long: {stats['drop_too_long']}")
+    print(f"  [cfun] dropped non-meaningful text: {stats['drop_non_meaningful_text']}")
+    print(f"  [cfun] dropped duplicate: {stats['drop_duplicate']}")
+    print(f"  [cfun] final kept: {len(texts)}")
+
+    records = {
+        "text": texts,
+        "lang": ["zh"] * len(texts),
+        "score": [None] * len(texts),
+        "source": ["cfun"] * len(texts),
+    }
+    return datasets.Dataset.from_dict(records)
 
 
 # ============================================================

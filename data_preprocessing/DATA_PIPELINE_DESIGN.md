@@ -164,7 +164,7 @@ Data Characteristics:
 │       │            │            │  │ Reward Hard-Negative Synthesis  │      │
 │       │            │            │  │ (synthesize_reward_data.py)     │      │
 │       │            │            │  │                                 │      │
-│       │            │            │  │ pure_jokes.csv─→ Chosen (ZH)   │      │
+│       │            │            │  │ unified_all(cfun)→ Chosen (ZH) │      │
 │       │            │            │  │ unified_all  ──→ Chosen (EN/ES)│      │
 │       │            │            │  │ Gemini API   ──→ Rejected (all)│      │
 │       │            │            │  └────────┬────────────────────────┘      │
@@ -559,9 +559,9 @@ Implemented in `synthesize_reward_data.py`. Generates preference pairs where **c
 ```
 ┌───────────────────────────────────────────────────┐
 │ Chosen Sources (Language-specific)                 │
-│  • ZH: Pre-extracted CFun jokes from               │
-│         data/cfun/pure_jokes.csv                   │
-│         (rule-filtered: dedup + length 10-500)     │
+│  • ZH: CFun records from unified_all.jsonl         │
+│         where source == "cfun"                     │
+│         (cleaned during parse_cfun stage)          │
 │  • EN: rJokes score_normalized >= 5/11 from         │
 │         unified_all.jsonl                          │
 │         (= raw Reddit upvotes >= 5, top ~8%)       │
@@ -600,7 +600,7 @@ Implemented in `synthesize_reward_data.py`. Generates preference pairs where **c
 |---|---|---|---|
 | EN | rJokes | `score_normalized >= 5/11 ≈ 0.4545` (raw >= 5) | rJokes scores normalized as `raw / 11`; raw >= 5 selects ~8% (~34K candidates) |
 | ES | HAHA | `score_normalized >= 0.30` (funniness >= 1.5/5) | Inclusive threshold retains genuinely humorous tweets; 0.7 was too strict (only 241 jokes passed) |
-| ZH | CFun (pure_jokes.csv) | No score filter | Quality ensured by manual curation of the CSV; rule-based length/dedup applied |
+| ZH | CFun (`source=cfun` in unified_all.jsonl) | No score filter | Quality ensured by `parse_cfun` extraction + cleaning (instruction routing, label removal, length filter, dedup) |
 
 > **Threshold history**: The initial threshold for EN/ES was mistakenly set to `0.7`, which is calibrated
 > for HAHA's 1–5 scale (where 0.7 = 3.5/5, very strict). For rJokes with the old cap of 20, this
@@ -608,18 +608,11 @@ Implemented in `synthesize_reward_data.py`. Generates preference pairs where **c
 > `_SCORE_THRESHOLDS` dict in `synthesize_reward_data.py` was introduced to encode correct per-source
 > defaults. After changing rJokes cap from 20 to 11, the EN threshold was updated from 0.25 to 5/11.
 
-**CFun CSV Rule-based Filtering**:
+**CFun Parse-time Filtering**:
 
-Chinese chosen samples are loaded from `data/cfun/pure_jokes.csv`, a pre-extracted CSV containing ~37K standalone jokes from the CFun dataset. The following rule-based filters are applied automatically by `load_cfun_jokes()`:
+CFun is no longer pre-extracted into a standalone CSV. During `pipeline --stage parse`, `parse_cfun()` pulls `ZhenghanYU/CFunSet` from HuggingFace, applies instruction-based extraction and quality filtering, then writes cleaned records directly into `unified_all.jsonl` with `source="cfun"`.
 
-| Filter | Description | Estimated Removal |
-|---|---|---|
-| Deduplication | Remove exact duplicate rows | ~3.2K rows |
-| Min length | Remove texts < 10 characters (punctuation fragments) | ~800 rows |
-| Max length | Remove texts > 500 characters (overly long narratives) | ~180 rows |
-| Whitespace strip | Trim leading/trailing whitespace | — |
-
-After filtering, ~30K valid jokes remain. The function randomly samples `n_samples` from this pool (default 9K for ZH hard-negative synthesis).
+For reward synthesis, `load_cfun_jokes()` now samples Chinese chosen texts directly from `unified_all.jsonl` (`source="cfun"`), with no secondary cleanup layer.
 
 ### 6.7 Notes
 
@@ -952,7 +945,7 @@ python -m data_preprocessing.pipeline --stage synthesize --n_headline 300 --n_ke
 python -m data_preprocessing.synthesize_task_data --lang en --n_headline 200 --n_keyword 100
 
 # Step 2b: Synthesize Reward Hard-Negative Data (Requires Gemini API)
-#   Input: pure_jokes.csv (ZH) + unified_all.jsonl (EN/ES) + Gemini API
+#   Input: unified_all.jsonl (ZH/EN/ES) + Gemini API
 #   Output: data/synthesized/reward_neg_{en,zh,es}.jsonl
 #
 #   Recommended n_samples (targeting ~7K hard-negative pairs per language after filtering):
@@ -1008,7 +1001,7 @@ python -m data_preprocessing.pipeline --stage parse
 export GEMINI_API_KEY='your-api-key'
 python -m data_preprocessing.pipeline --stage synthesize
 
-# 3. Synthesize reward hard-negatives (requires data/cfun/pure_jokes.csv for ZH)
+# 3. Synthesize reward hard-negatives (reads source=cfun from unified_all.jsonl for ZH)
 #    Use uv run to pick up langid + google-genai from the uv venv.
 uv run python -m data_preprocessing.synthesize_reward_data --lang zh --n_samples 9000
 uv run python -m data_preprocessing.synthesize_reward_data --lang en --n_samples 7000

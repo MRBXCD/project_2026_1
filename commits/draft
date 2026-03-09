@@ -1,0 +1,3 @@
+要做的修改有哪些
+1. 修改GRPO的prompts划分，必须要有test set
+2. 要写一个GRPO train eval callback

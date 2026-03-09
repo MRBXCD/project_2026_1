@@ -74,6 +74,7 @@ import os
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+GRPO_PROMPTS_TRAIN_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts_train.jsonl"
 GRPO_PROMPTS_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts.jsonl"
 SFT_ADAPTER_DIR = PROJECT_ROOT / "checkpoints" / "sft" / "final"
 GRPO_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "grpo"
@@ -167,7 +168,7 @@ def load_sft_merged_model(
 # ============================================================
 
 def load_grpo_dataset(
-    prompts_file: str | Path = GRPO_PROMPTS_FILE,
+    prompts_file: str | Path | None = None,
 ) -> Dataset:
     """Load the GRPO training prompt dataset.
 
@@ -192,7 +193,9 @@ def load_grpo_dataset(
             function via **kwargs).
 
     Args:
-        prompts_file: Path to the GRPO prompts JSONL file.
+        prompts_file: Path to the GRPO prompts JSONL file. If None,
+            auto-detects: prefers grpo_prompts_train.jsonl (split mode),
+            falls back to grpo_prompts.jsonl (legacy full dataset).
 
     Returns:
         datasets.Dataset: The training prompt dataset.
@@ -200,6 +203,11 @@ def load_grpo_dataset(
     Raises:
         FileNotFoundError: If prompts_file does not exist.
     """
+    if prompts_file is None:
+        if GRPO_PROMPTS_TRAIN_FILE.exists():
+            prompts_file = GRPO_PROMPTS_TRAIN_FILE
+        else:
+            prompts_file = GRPO_PROMPTS_FILE
     prompts_file = Path(prompts_file)
     if not prompts_file.exists():
         raise FileNotFoundError(

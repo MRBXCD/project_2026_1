@@ -276,30 +276,41 @@ def format_sft(
 # Formatter 3: GRPO Prompt (SemEval Data → GRPO prompt format)
 # ============================================================
 
-def format_grpo(semeval_dataset: datasets.Dataset) -> datasets.Dataset:
-    """Convert SemEval parsed results to GRPO training prompt format.
+def format_grpo(
+    semeval_dataset: datasets.Dataset,
+    eval_ratio: float = 0.0,
+    seed: int = 42,
+) -> tuple[datasets.Dataset, datasets.Dataset | None]:
+    """Convert SemEval parsed results to GRPO prompt format, with optional train/eval split.
 
     Processing Flow:
-        1. Select template based on subtask type for each SemEval item
-        2. Fill template to generate complete user prompt
-        3. Wrap in chat messages format (user turn only, no assistant)
-        4. Keep headline and keywords fields (for reward function usage)
+        1. Optionally split the dataset into train/eval (stratified by language)
+        2. Select template based on subtask type for each SemEval item
+        3. Fill template to generate complete user prompt
+        4. Wrap in chat messages format (user turn only, no assistant)
+        5. Keep headline, keywords, and lang fields
 
     Args:
         semeval_dataset: Output of parse_semeval().
             schema: {id, headline, keywords, lang, subtask}
+        eval_ratio: Fraction of data reserved for evaluation (0.0 = no split).
+            Split is stratified by language so each language contributes
+            proportionally to both train and eval sets.
+        seed: Random seed for reproducible splitting.
 
     Returns:
-        datasets.Dataset: GRPO prompt format
+        tuple: (train_dataset, eval_dataset)
+            eval_dataset is None when eval_ratio == 0.0.
+            Each dataset has columns:
             - prompt (list[dict]): [{"role": "user", "content": "..."}]
-            - headline (str): News headline, has value for headline subtask, else empty string
-            - keywords (list[str]): List of keywords, has value for keyword subtask, else empty list
+            - headline (str)
+            - keywords (list[str])
+            - lang (str)
     """
     def _to_grpo_format(example):
         lang = example["lang"]
         subtask = example["subtask"]
 
-        # Select template based on subtask type and fill
         if subtask == "headline":
             prompt_text = build_headline_prompt(example["headline"], lang)
         else:  # keyword
@@ -310,15 +321,45 @@ def format_grpo(semeval_dataset: datasets.Dataset) -> datasets.Dataset:
             "prompt": [{"role": "user", "content": prompt_text}],
             "headline": example["headline"],
             "keywords": example["keywords"],
+            "lang": lang,
         }
 
-    result = semeval_dataset.map(
-        _to_grpo_format,
-        remove_columns=semeval_dataset.column_names,  # Remove id, lang, subtask, etc.
-    )
+    if eval_ratio > 0.0:
+        rng = random.Random(seed)
 
-    print(f"  [grpo] Generated {len(result)} GRPO prompts")
-    return result
+        langs = sorted(set(semeval_dataset["lang"]))
+        train_indices, eval_indices = [], []
+
+        for lang in langs:
+            lang_indices = [
+                i for i, l in enumerate(semeval_dataset["lang"]) if l == lang
+            ]
+            rng.shuffle(lang_indices)
+            n_eval = max(1, int(len(lang_indices) * eval_ratio))
+            eval_indices.extend(lang_indices[:n_eval])
+            train_indices.extend(lang_indices[n_eval:])
+
+        train_ds = semeval_dataset.select(train_indices).map(
+            _to_grpo_format, remove_columns=semeval_dataset.column_names,
+        )
+        eval_ds = semeval_dataset.select(eval_indices).map(
+            _to_grpo_format, remove_columns=semeval_dataset.column_names,
+        )
+
+        for split_name, ds in [("train", train_ds), ("eval", eval_ds)]:
+            per_lang = {}
+            for lang_val in ds["lang"]:
+                per_lang[lang_val] = per_lang.get(lang_val, 0) + 1
+            dist_str = ", ".join(f"{k}: {v}" for k, v in sorted(per_lang.items()))
+            print(f"  [grpo] {split_name}: {len(ds)} prompts ({dist_str})")
+
+        return train_ds, eval_ds
+
+    result = semeval_dataset.map(
+        _to_grpo_format, remove_columns=semeval_dataset.column_names,
+    )
+    print(f"  [grpo] Generated {len(result)} GRPO prompts (no eval split)")
+    return result, None
 
 
 # ============================================================
