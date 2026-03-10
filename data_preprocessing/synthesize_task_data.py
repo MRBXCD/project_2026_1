@@ -43,6 +43,7 @@ import json
 import os
 import random
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from data_preprocessing.prompt_templates import (
@@ -56,6 +57,8 @@ from data_preprocessing.prompt_templates import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNTHESIZED_DIR = PROJECT_ROOT / "data" / "synthesized"
+BATCH_JOB_DIR = SYNTHESIZED_DIR / "type_b_batch_jobs"
+BATCH_JOB_REGISTRY = BATCH_JOB_DIR / "registry.jsonl"
 
 
 # ============================================================
@@ -76,6 +79,31 @@ KEYWORD_POOL_EN = [
     "dinosaur", "trampoline", "mushroom", "lighthouse", "accordion",
     "parrot", "tuxedo", "glacier", "chopstick", "saxophone",
     "elevator", "flamingo", "suitcase", "comet", "waffle",
+    "lantern", "backpack", "igloo", "fountain", "zeppelin",
+    "crystal", "marshmallow", "octopus", "microscope", "violin",
+    "pyramid", "carousel", "otter", "galaxy", "windmill",
+    "cinnamon", "meadow", "satellite", "pancake", "tunnel",
+    "pebble", "seahorse", "origami", "skateboard", "nectar",
+    "volleyball", "harpoon", "beehive", "moonlight", "campfire",
+    "hourglass", "bamboo", "cupcake", "canyon", "firework",
+    "whistle", "compass", "raincoat", "snowflake", "reef",
+    "coconut", "meerkat", "drumstick", "stardust", "museum",
+    "kayak", "robot", "fossil", "carnation", "pinwheel",
+    "donut", "meteor", "chessboard", "waistcoat", "ginger",
+    "castle", "seashell", "pillow", "chimney", "trombone",
+    "hedgehog", "pagoda", "puddle", "firefly", "bathtub",
+    "thunder", "almond", "goblet", "orchid", "waterfall",
+    "harbor", "sunbeam", "clocktower", "strawberry", "walrus",
+    "teapot", "scooter", "anvil", "plankton", "hammock",
+    "popsicle", "bison", "sandcastle", "dice", "quartz",
+    "lizard", "rainbow", "trumpet", "cherry", "scooterbag",
+    "snowman", "raccoon", "blueberry", "gingerbread", "hamster",
+    "tortoise", "paperclip", "megaphone", "lilypad", "cliff",
+    "sunflower", "mapcase", "starfish", "ukulele", "parachute",
+    "millstone", "jigsaw", "helmet", "sapphire", "cabin",
+    "peppermint", "locomotive", "tangerine", "monsoon", "riverbank",
+    "binoculars", "moth", "catapult", "breadstick", "planetarium",
+    "cobblestone", "windchime", "mooncake", "slingshot", "strawhat",
 ]
 
 KEYWORD_POOL_ZH = [
@@ -85,6 +113,30 @@ KEYWORD_POOL_ZH = [
     "蹦床", "蘑菇", "灯塔", "手风琴", "鹦鹉",
     "冰川", "筷子", "萨克斯", "电梯", "火烈鸟",
     "行李箱", "彗星", "华夫饼", "拖拉机", "企鹅",
+    "灯笼", "背包", "喷泉", "飞船", "水晶",
+    "软糖", "章鱼", "显微镜", "小提琴", "金字塔",
+    "旋转木马", "水獭", "银河", "风车", "肉桂",
+    "草地", "卫星", "煎饼", "隧道", "鹅卵石",
+    "海马", "折纸", "滑板", "树汁", "排球",
+    "鱼叉", "蜂巢", "月光", "篝火", "沙漏",
+    "竹子", "纸杯蛋糕", "峡谷", "焰火", "口哨",
+    "指南针", "雨衣", "雪晶", "珊瑚礁", "椰子",
+    "狐獴", "鼓槌", "星尘", "博物馆", "皮划艇",
+    "机器人", "化石", "康乃馨", "风车玩具", "甜甜圈",
+    "流星", "棋盘", "马甲", "姜饼", "城堡",
+    "贝壳", "枕头", "烟囱", "长号", "刺猬",
+    "宝塔", "水洼", "萤火虫", "浴缸", "雷声",
+    "杏仁", "高脚杯", "铃兰", "瀑布", "港口",
+    "钟楼", "草莓", "海象", "茶壶", "滑板车",
+    "铁砧", "浮游生物", "吊床", "冰棍", "野牛",
+    "沙堡", "骰子", "石英", "蜥蜴", "彩虹",
+    "小号", "樱桃", "雪人", "浣熊", "蓝莓",
+    "仓鼠", "乌龟", "回形针", "扩音器", "睡莲",
+    "悬崖", "向日葵", "海星", "尤克里里", "降落伞",
+    "磨盘", "拼图", "头盔", "蓝宝石", "木屋",
+    "薄荷糖", "火车头", "橘子", "季风", "河岸",
+    "双筒望远镜", "飞蛾", "投石机", "面包棒", "天文馆",
+    "鹅卵路", "风铃", "月饼", "弹弓", "草帽",
 ]
 
 KEYWORD_POOL_ES = [
@@ -94,6 +146,30 @@ KEYWORD_POOL_ES = [
     "dinosaurio", "trampolín", "hongo", "faro", "acordeón",
     "loro", "esmoquin", "glaciar", "palillos", "saxofón",
     "ascensor", "flamenco", "maleta", "cometa", "gofre",
+    "linterna", "mochila", "iglú", "fuente", "zepelín",
+    "cristal", "caramelo", "pulpo", "microscopio", "violín",
+    "pirámide", "carrusel", "nutria", "galaxia", "molino",
+    "canela", "pradera", "satélite", "panqueque", "túnel",
+    "guijarro", "caballito", "origami", "patineta", "néctar",
+    "voleibol", "arpón", "colmena", "luzlunar", "fogata",
+    "relojarena", "bambú", "magdalena", "cañón", "fuegos",
+    "silbato", "brújula", "impermeable", "copo", "arrecife",
+    "coco", "suricata", "baqueta", "polvoestelar", "museo",
+    "kayak", "robot", "fósil", "clavel", "molinillo",
+    "dónut", "meteoro", "tablero", "chaleco", "jengibre",
+    "castillo", "concha", "almohada", "chimenea", "trombón",
+    "erizo", "pagoda", "charco", "luciérnaga", "bañera",
+    "trueno", "almendra", "cáliz", "orquídea", "cascada",
+    "puerto", "torreloj", "fresa", "morsa", "tetera",
+    "patinete", "yunque", "plancton", "hamaca", "paleta",
+    "bisonte", "castilloarena", "dado", "cuarzo", "lagarto",
+    "arcoíris", "trompeta", "cereza", "muñeco", "mapache",
+    "arándano", "hámster", "tortuga", "clip", "megáfono",
+    "nenúfar", "acantilado", "girasol", "estrellamar", "ukelele",
+    "paracaídas", "piedramolino", "rompecabezas", "casco", "zafiro",
+    "cabaña", "menta", "locomotora", "mandarina", "monzón",
+    "ribera", "binoculares", "polilla", "catapulta", "grisín",
+    "planetario", "adoquín", "campanaviento", "pastelluna", "tirachinas",
 ]
 
 _KEYWORD_POOLS = {
@@ -101,6 +177,8 @@ _KEYWORD_POOLS = {
     "zh": KEYWORD_POOL_ZH,
     "es": KEYWORD_POOL_ES,
 }
+
+GEMINI_BATCH_MODEL = "gemini-3-flash-preview"
 
 
 # ============================================================
@@ -179,6 +257,298 @@ def _call_gemini(client, prompt: str, max_retries: int = 3) -> str | None:
                 continue
 
     return None
+
+
+def _extract_job_state(job) -> str:
+    """Extract batch job state from SDK object or dict."""
+    state = getattr(job, "state", None)
+    if isinstance(state, str):
+        return state
+    if state is not None:
+        name = getattr(state, "name", None)
+        if isinstance(name, str):
+            return name
+    if isinstance(job, dict):
+        value = job.get("state")
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            name = value.get("name")
+            if isinstance(name, str):
+                return name
+    return ""
+
+
+def _extract_batch_result_file_name(job) -> str | None:
+    """Extract output file name from batch job object."""
+    dest = getattr(job, "dest", None)
+    if dest is not None:
+        file_name = getattr(dest, "file_name", None) or getattr(dest, "fileName", None)
+        if isinstance(file_name, str) and file_name:
+            return file_name
+    if isinstance(job, dict):
+        dest_dict = job.get("dest", {})
+        if isinstance(dest_dict, dict):
+            file_name = dest_dict.get("file_name") or dest_dict.get("fileName")
+            if isinstance(file_name, str) and file_name:
+                return file_name
+    return None
+
+
+def _extract_text_from_batch_record(record: dict) -> str | None:
+    """Extract model text output from one batch result record."""
+    response = record.get("response")
+    if not isinstance(response, dict):
+        return None
+
+    text = response.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    candidates = response.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    first = candidates[0]
+    if not isinstance(first, dict):
+        return None
+    content = first.get("content")
+    if not isinstance(content, dict):
+        return None
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if isinstance(part, dict):
+            part_text = part.get("text")
+            if isinstance(part_text, str) and part_text.strip():
+                return part_text.strip()
+    return None
+
+
+def _parse_batch_download_to_texts(downloaded_data) -> list[str]:
+    """Parse batch job output content to a list of response texts."""
+    if isinstance(downloaded_data, (bytes, bytearray)):
+        content = downloaded_data.decode("utf-8")
+    else:
+        content = str(downloaded_data)
+
+    texts: list[str] = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("error") is not None:
+            continue
+        text = _extract_text_from_batch_record(record)
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _download_content_to_text(downloaded_data) -> str:
+    """Normalize downloaded batch file content to UTF-8 text."""
+    if isinstance(downloaded_data, (bytes, bytearray)):
+        return downloaded_data.decode("utf-8")
+    return str(downloaded_data)
+
+
+def _now_iso() -> str:
+    """Return current UTC timestamp in ISO format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _read_batch_job_registry() -> list[dict]:
+    """Read tracked batch jobs from local registry."""
+    if not BATCH_JOB_REGISTRY.exists():
+        return []
+    records: list[dict] = []
+    with open(BATCH_JOB_REGISTRY, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                records.append(row)
+    return records
+
+
+def _write_batch_job_registry(records: list[dict]) -> None:
+    """Write full batch job registry records."""
+    BATCH_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    with open(BATCH_JOB_REGISTRY, "w", encoding="utf-8") as f:
+        for row in records:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _register_batch_job(record: dict) -> None:
+    """Append one batch job record to registry."""
+    records = _read_batch_job_registry()
+    records.append(record)
+    _write_batch_job_registry(records)
+
+
+def _update_batch_job_record(job_id: str, **updates) -> None:
+    """Update tracked fields for one batch job."""
+    records = _read_batch_job_registry()
+    changed = False
+    for row in records:
+        if row.get("job_id") == job_id:
+            row.update(updates)
+            changed = True
+    if changed:
+        _write_batch_job_registry(records)
+
+
+def _job_payload_path(job_id: str) -> Path:
+    """Return payload metadata file path for a batch job."""
+    safe_job_id = job_id.replace("/", "__")
+    return BATCH_JOB_DIR / f"{safe_job_id}.json"
+
+
+def _save_batch_job_payload(job_id: str, payload: dict) -> None:
+    """Save prompt metadata for later download/assembly."""
+    BATCH_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    path = _job_payload_path(job_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+
+def _load_batch_job_payload(job_id: str) -> dict | None:
+    """Load prompt metadata for a tracked batch job."""
+    path = _job_payload_path(job_id)
+    if not path.exists():
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _submit_gemini_batch_job(
+    client,
+    prompts: list[str],
+    display_name: str,
+    max_retries: int = 2,
+) -> str | None:
+    """Submit prompts as one batch job and return job id."""
+    if not prompts:
+        return None
+    from google.genai import types
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            requests = [
+                {
+                    "contents": [{"parts": [{"text": prompt}], "role": "user"}],
+                    "config": types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        temperature=0.9,
+                        max_output_tokens=256,
+                    ),
+                }
+                for prompt in prompts
+            ]
+            job = client.batches.create(
+                model=GEMINI_BATCH_MODEL,
+                src=requests,
+                config={"display_name": display_name},
+            )
+            job_id = getattr(job, "name", None) or (job.get("name") if isinstance(job, dict) else None)
+            if isinstance(job_id, str) and job_id:
+                return job_id
+            print("    Batch create returned no job id.")
+            return None
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "429" in error_msg or "resource" in error_msg or "quota" in error_msg:
+                wait_time = 2 ** attempt * 5
+                print(f"    Batch submit rate limited, waiting {wait_time}s ({attempt}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            print(f"    Batch submit failed ({attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(2)
+                continue
+    return None
+
+
+def _poll_batch_job_until_terminal(
+    client,
+    job_id: str,
+    poll_interval_s: float = 8.0,
+    max_wait_s: float = 7200.0,
+):
+    """Poll one batch job until terminal state or timeout."""
+    start = time.time()
+    terminal_states = {
+        "JOB_STATE_SUCCEEDED",
+        "JOB_STATE_FAILED",
+        "JOB_STATE_CANCELLED",
+        "JOB_STATE_EXPIRED",
+    }
+    while True:
+        current = client.batches.get(name=job_id)
+        state = _extract_job_state(current)
+        if state in terminal_states:
+            return current
+        elapsed = time.time() - start
+        if elapsed >= max_wait_s:
+            print(f"    Batch timeout after {int(elapsed)}s for {job_id}")
+            return None
+        print(f"    Batch state={state or 'UNKNOWN'}, waited={int(elapsed)}s")
+        time.sleep(poll_interval_s)
+
+
+def _download_batch_job_texts(client, job) -> list[str]:
+    """Download and parse generated texts from succeeded batch job."""
+    result_file = _extract_batch_result_file_name(job)
+    if not result_file:
+        print("    Batch succeeded but no output file found.")
+        return []
+    downloaded = client.files.download(file=result_file)
+    return _parse_batch_download_to_texts(downloaded)
+
+
+def _call_gemini_batch_requests(
+    client,
+    prompts: list[str],
+    max_retries: int = 2,
+    poll_interval_s: float = 8.0,
+    max_wait_s: float = 7200.0,
+) -> list[str]:
+    """Backward-compatible helper: submit + poll + download in one call."""
+    display_name = f"type-b-run-{int(time.time())}"
+    job_id = _submit_gemini_batch_job(
+        client=client,
+        prompts=prompts,
+        display_name=display_name,
+        max_retries=max_retries,
+    )
+    if not job_id:
+        return []
+    job = _poll_batch_job_until_terminal(
+        client=client,
+        job_id=job_id,
+        poll_interval_s=poll_interval_s,
+        max_wait_s=max_wait_s,
+    )
+    if job is None:
+        return []
+    final_state = _extract_job_state(job)
+    if final_state != "JOB_STATE_SUCCEEDED":
+        print(f"    Batch finished with state={final_state}")
+        return []
+    texts = _download_batch_job_texts(client, job)
+    print(f"    Batch returned {len(texts)} responses for {len(prompts)} prompts")
+    return texts
 
 
 # ============================================================
@@ -354,10 +724,247 @@ def _filter_keyword_response(response: str, word1: str, word2: str) -> bool:
 # Synthesis Main Logic
 # ============================================================
 
+
+def _build_headline_prompt_records(lang: str, n_headline: int, seed: int, oversample_ratio: float) -> list[dict]:
+    """Build prompt records for headline subtask."""
+    if n_headline <= 0:
+        return []
+    n_headline_fetch = int(n_headline * oversample_ratio)
+    headlines = _load_headlines(lang, n_headline_fetch, seed=seed)
+    return [
+        {
+            "subtask": "headline",
+            "prompt": build_headline_prompt(headline, lang),
+            "headline": headline,
+        }
+        for headline in headlines
+    ]
+
+
+def _build_keyword_prompt_records(lang: str, n_keyword: int, seed: int, oversample_ratio: float) -> list[dict]:
+    """Build prompt records for keyword subtask."""
+    if n_keyword <= 0:
+        return []
+    n_keyword_fetch = int(n_keyword * oversample_ratio)
+    keyword_pairs = _generate_keyword_pairs(lang, n_keyword_fetch, seed=seed)
+    return [
+        {
+            "subtask": "keyword",
+            "prompt": build_keyword_prompt(w1, w2, lang),
+            "word1": w1,
+            "word2": w2,
+        }
+        for w1, w2 in keyword_pairs
+    ]
+
+
+def submit_type_b_batch_jobs(
+    lang: str,
+    n_headline: int = 200,
+    n_keyword: int = 100,
+    seed: int = 42,
+) -> list[str]:
+    """Submit Type-B synthesis jobs to Gemini Batch API and return job ids."""
+    oversample_ratio = 1.5
+    client = _init_gemini_client()
+    submitted_job_ids: list[str] = []
+
+    headline_records = _build_headline_prompt_records(lang, n_headline, seed, oversample_ratio)
+    keyword_records = _build_keyword_prompt_records(lang, n_keyword, seed, oversample_ratio)
+    for subtask, records, target in [
+        ("headline", headline_records, n_headline),
+        ("keyword", keyword_records, n_keyword),
+    ]:
+        if not records:
+            continue
+        prompts = [item["prompt"] for item in records]
+        display_name = f"type-b-{lang}-{subtask}-{int(time.time())}"
+        job_id = _submit_gemini_batch_job(client, prompts, display_name=display_name)
+        if not job_id:
+            print(f"  Failed to submit {subtask} batch for {lang}")
+            continue
+
+        payload = {
+            "job_id": job_id,
+            "lang": lang,
+            "subtask": subtask,
+            "target_count": target,
+            "seed": seed,
+            "created_at": _now_iso(),
+            "records": records,
+        }
+        _save_batch_job_payload(job_id, payload)
+        _register_batch_job(
+            {
+                "job_id": job_id,
+                "lang": lang,
+                "subtask": subtask,
+                "target_count": target,
+                "backend": "batch_api",
+                "state": "JOB_STATE_SUBMITTED",
+                "created_at": payload["created_at"],
+                "downloaded": False,
+            }
+        )
+        submitted_job_ids.append(job_id)
+        print(f"  Submitted {subtask} batch job: {job_id}")
+
+    return submitted_job_ids
+
+
+def _build_samples_from_payload(payload: dict, responses: list[str]) -> list[dict]:
+    """Build synthesized SFT samples from payload metadata and responses."""
+    lang = payload["lang"]
+    subtask = payload["subtask"]
+    target_count = int(payload.get("target_count", 0))
+    records = payload.get("records", [])
+
+    samples: list[dict] = []
+    failed = 0
+    for record, response in zip(records, responses):
+        if len(samples) >= target_count:
+            break
+        prompt = record.get("prompt", "")
+        if not prompt or not response:
+            failed += 1
+            continue
+        if subtask == "headline":
+            passed = _filter_headline_response(response)
+        else:
+            passed = _filter_keyword_response(response, record.get("word1", ""), record.get("word2", ""))
+        if not passed:
+            failed += 1
+            continue
+        samples.append(
+            {
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": response},
+                ]
+            }
+        )
+
+    print(
+        f"  Build samples: subtask={subtask}, received={len(responses)}, "
+        f"passed={len(samples)}, filtered={failed}, target={target_count}"
+    )
+    return samples
+
+
+def query_tracked_batch_jobs() -> list[dict]:
+    """Query current states for all tracked jobs in local registry."""
+    records = _read_batch_job_registry()
+    if not records:
+        print("No tracked batch jobs found.")
+        return []
+    client = _init_gemini_client()
+    rows: list[dict] = []
+    print("\nTracked Type-B Batch Jobs:")
+    print("idx  lang  subtask   state                     downloaded  job_id")
+    print("---  ----  --------  ------------------------  ----------  ----------------------------")
+    for idx, row in enumerate(records, start=1):
+        job_id = row.get("job_id", "")
+        state = row.get("state", "UNKNOWN")
+        try:
+            job = client.batches.get(name=job_id)
+            queried_state = _extract_job_state(job) or state
+            state = queried_state
+        except Exception:
+            queried_state = state
+        row["state"] = queried_state
+        downloaded = bool(row.get("downloaded", False))
+        print(f"{idx:<3}  {row.get('lang','-'):<4}  {row.get('subtask','-'):<8}  {state:<24}  {str(downloaded):<10}  {job_id}")
+        rows.append(row)
+    _write_batch_job_registry(records)
+    return rows
+
+
+def query_all_remote_batch_jobs(max_jobs: int = 100) -> list[dict]:
+    """Query all batch jobs visible to current API key."""
+    client = _init_gemini_client()
+    from google.genai import types
+
+    rows: list[dict] = []
+    print("\nAll Remote Batch Jobs (current API key):")
+    print("idx  state                     job_id")
+    print("---  ------------------------  ----------------------------")
+
+    try:
+        pager = client.batches.list(
+            config=types.ListBatchJobsConfig(page_size=max_jobs)
+        )
+        for idx, job in enumerate(pager, start=1):
+            job_id = getattr(job, "name", None) or (
+                job.get("name") if isinstance(job, dict) else ""
+            )
+            state = _extract_job_state(job) or "UNKNOWN"
+            print(f"{idx:<3}  {state:<24}  {job_id}")
+            rows.append({"job_id": job_id, "state": state})
+            if idx >= max_jobs:
+                break
+    except Exception as e:
+        print(f"Failed to list remote batch jobs: {e}")
+        return []
+    return rows
+
+
+def download_batch_job_by_id(job_id: str, append_output: bool = True) -> tuple[str | None, int]:
+    """Download one succeeded batch job and optionally append to type_b output."""
+    client = _init_gemini_client()
+    job = client.batches.get(name=job_id)
+    state = _extract_job_state(job)
+    _update_batch_job_record(job_id, state=state)
+    if state != "JOB_STATE_SUCCEEDED":
+        print(f"Job is not ready for download: {job_id} (state={state})")
+        payload = _load_batch_job_payload(job_id)
+        return (payload.get("lang") if payload else None), 0
+
+    result_file = _extract_batch_result_file_name(job)
+    if not result_file:
+        print(f"No result file available for job: {job_id}")
+        payload = _load_batch_job_payload(job_id)
+        return (payload.get("lang") if payload else None), 0
+
+    downloaded = client.files.download(file=result_file)
+    payload = _load_batch_job_payload(job_id)
+    if payload is None:
+        raw_text = _download_content_to_text(downloaded)
+        BATCH_JOB_DIR.mkdir(parents=True, exist_ok=True)
+        raw_path = BATCH_JOB_DIR / f"raw_{job_id.replace('/', '__')}.jsonl"
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write(raw_text)
+        print(f"Payload not found for job: {job_id}")
+        print(f"Raw batch result saved to: {raw_path}")
+        return None, 0
+
+    responses = _parse_batch_download_to_texts(downloaded)
+    if not responses:
+        print(f"No responses downloaded for job: {job_id}")
+        return payload.get("lang"), 0
+
+    samples = _build_samples_from_payload(payload, responses)
+    lang = payload.get("lang")
+    if append_output and lang:
+        output_path = SYNTHESIZED_DIR / f"type_b_{lang}.jsonl"
+        SYNTHESIZED_DIR.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "a", encoding="utf-8") as f:
+            for sample in samples:
+                f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        print(f"  Appended {len(samples)} samples to {output_path}")
+
+    _update_batch_job_record(
+        job_id,
+        downloaded=True,
+        downloaded_at=_now_iso(),
+        downloaded_count=len(samples),
+    )
+    return lang, len(samples)
+
 def synthesize_for_language(
     lang: str,
     n_headline: int = 200,
     n_keyword: int = 100,
+    backend: str = "batch_api",
     seed: int = 42,
 ) -> list[dict]:
     """Synthesize Type B data for specified language.
@@ -372,6 +979,7 @@ def synthesize_for_language(
         lang: Language code "en" / "zh" / "es"
         n_headline: Number of headline subtask samples to synthesize
         n_keyword: Number of keyword subtask samples to synthesize
+        backend: Gemini request backend. "batch_api" or "realtime"
         seed: Random seed
 
     Returns:
@@ -395,31 +1003,68 @@ def synthesize_for_language(
 
         passed = 0
         failed = 0
-        for i, headline in enumerate(headlines):
-            # Target reached, stop early
-            if passed >= n_headline:
-                print(f"    Target {n_headline} reached, stopping early (Total API calls: {i})")
-                break
-
-            user_prompt = build_headline_prompt(headline, lang)
-            response = _call_gemini(client, user_prompt)
-
-            if response and _filter_headline_response(response):
-                all_samples.append({
-                    "messages": [
-                        {"role": "user", "content": user_prompt},
-                        {"role": "assistant", "content": response},
-                    ]
-                })
-                passed += 1
+        headline_prompts = [build_headline_prompt(headline, lang) for headline in headlines]
+        if backend == "batch_api":
+            responses = _call_gemini_batch_requests(client, headline_prompts)
+            if responses:
+                for user_prompt, response in zip(headline_prompts, responses):
+                    if passed >= n_headline:
+                        break
+                    if response and _filter_headline_response(response):
+                        all_samples.append({
+                            "messages": [
+                                {"role": "user", "content": user_prompt},
+                                {"role": "assistant", "content": response},
+                            ]
+                        })
+                        passed += 1
+                    else:
+                        failed += 1
             else:
-                failed += 1
+                print("    Batch headline generation returned no results, fallback to realtime.")
+                for i, user_prompt in enumerate(headline_prompts):
+                    if passed >= n_headline:
+                        print(f"    Target {n_headline} reached, stopping early (Total API calls: {i})")
+                        break
+                    response = _call_gemini(client, user_prompt)
+                    if response and _filter_headline_response(response):
+                        all_samples.append({
+                            "messages": [
+                                {"role": "user", "content": user_prompt},
+                                {"role": "assistant", "content": response},
+                            ]
+                        })
+                        passed += 1
+                    else:
+                        failed += 1
+                    if (i + 1) % 50 == 0:
+                        print(f"    Progress: API calls {i + 1}/{len(headline_prompts)}, Passed: {passed}/{n_headline}, Filtered: {failed}")
+                    time.sleep(0.1)
+        else:
+            for i, user_prompt in enumerate(headline_prompts):
+                # Target reached, stop early
+                if passed >= n_headline:
+                    print(f"    Target {n_headline} reached, stopping early (Total API calls: {i})")
+                    break
 
-            # Progress print (every 50)
-            if (i + 1) % 50 == 0:
-                print(f"    Progress: API calls {i + 1}/{len(headlines)}, Passed: {passed}/{n_headline}, Filtered: {failed}")
+                response = _call_gemini(client, user_prompt)
 
-            time.sleep(0.1)
+                if response and _filter_headline_response(response):
+                    all_samples.append({
+                        "messages": [
+                            {"role": "user", "content": user_prompt},
+                            {"role": "assistant", "content": response},
+                        ]
+                    })
+                    passed += 1
+                else:
+                    failed += 1
+
+                # Progress print (every 50)
+                if (i + 1) % 50 == 0:
+                    print(f"    Progress: API calls {i + 1}/{len(headline_prompts)}, Passed: {passed}/{n_headline}, Filtered: {failed}")
+
+                time.sleep(0.1)
 
         print(f"  Headline Done: {passed} passed, {failed} filtered")
         if passed < n_headline:
@@ -435,29 +1080,66 @@ def synthesize_for_language(
 
         passed = 0
         failed = 0
-        for i, (w1, w2) in enumerate(keyword_pairs):
-            if passed >= n_keyword:
-                print(f"    Target {n_keyword} reached, stopping early (Total API calls: {i})")
-                break
-
-            user_prompt = build_keyword_prompt(w1, w2, lang)
-            response = _call_gemini(client, user_prompt)
-
-            if response and _filter_keyword_response(response, w1, w2):
-                all_samples.append({
-                    "messages": [
-                        {"role": "user", "content": user_prompt},
-                        {"role": "assistant", "content": response},
-                    ]
-                })
-                passed += 1
+        keyword_prompts = [build_keyword_prompt(w1, w2, lang) for w1, w2 in keyword_pairs]
+        if backend == "batch_api":
+            responses = _call_gemini_batch_requests(client, keyword_prompts)
+            if responses:
+                for (w1, w2), user_prompt, response in zip(keyword_pairs, keyword_prompts, responses):
+                    if passed >= n_keyword:
+                        break
+                    if response and _filter_keyword_response(response, w1, w2):
+                        all_samples.append({
+                            "messages": [
+                                {"role": "user", "content": user_prompt},
+                                {"role": "assistant", "content": response},
+                            ]
+                        })
+                        passed += 1
+                    else:
+                        failed += 1
             else:
-                failed += 1
+                print("    Batch keyword generation returned no results, fallback to realtime.")
+                for i, ((w1, w2), user_prompt) in enumerate(zip(keyword_pairs, keyword_prompts)):
+                    if passed >= n_keyword:
+                        print(f"    Target {n_keyword} reached, stopping early (Total API calls: {i})")
+                        break
+                    response = _call_gemini(client, user_prompt)
+                    if response and _filter_keyword_response(response, w1, w2):
+                        all_samples.append({
+                            "messages": [
+                                {"role": "user", "content": user_prompt},
+                                {"role": "assistant", "content": response},
+                            ]
+                        })
+                        passed += 1
+                    else:
+                        failed += 1
+                    if (i + 1) % 50 == 0:
+                        print(f"    Progress: API calls {i + 1}/{len(keyword_pairs)}, Passed: {passed}/{n_keyword}, Filtered: {failed}")
+                    time.sleep(0.1)
+        else:
+            for i, ((w1, w2), user_prompt) in enumerate(zip(keyword_pairs, keyword_prompts)):
+                if passed >= n_keyword:
+                    print(f"    Target {n_keyword} reached, stopping early (Total API calls: {i})")
+                    break
 
-            if (i + 1) % 50 == 0:
-                print(f"    Progress: API calls {i + 1}/{len(keyword_pairs)}, Passed: {passed}/{n_keyword}, Filtered: {failed}")
+                response = _call_gemini(client, user_prompt)
 
-            time.sleep(0.1)
+                if response and _filter_keyword_response(response, w1, w2):
+                    all_samples.append({
+                        "messages": [
+                            {"role": "user", "content": user_prompt},
+                            {"role": "assistant", "content": response},
+                        ]
+                    })
+                    passed += 1
+                else:
+                    failed += 1
+
+                if (i + 1) % 50 == 0:
+                    print(f"    Progress: API calls {i + 1}/{len(keyword_pairs)}, Passed: {passed}/{n_keyword}, Filtered: {failed}")
+
+                time.sleep(0.1)
 
         print(f"  Keyword Done: {passed} passed, {failed} filtered")
         if passed < n_keyword:
@@ -522,24 +1204,106 @@ def main():
         default=42,
         help="Random seed (default 42)",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="batch_api",
+        choices=["batch_api", "realtime"],
+        help="Gemini request backend for synthesis",
+    )
+    parser.add_argument(
+        "--batch-action",
+        type=str,
+        default="run",
+        choices=["run", "submit", "query_download", "query_all"],
+        help="Batch workflow action: run (legacy), submit, query_download, or query_all",
+    )
+    parser.add_argument(
+        "--job",
+        type=str,
+        default=None,
+        help="Job selector for query_download: job id or 1-based index",
+    )
+    parser.add_argument(
+        "--max-jobs",
+        type=int,
+        default=100,
+        help="Maximum remote jobs to list in query_all mode",
+    )
 
     args = parser.parse_args()
 
-    languages = ["en", "zh", "es"] if args.lang == "all" else [args.lang]
+    if args.batch_action in {"query_download", "query_all"}:
+        rows = (
+            query_tracked_batch_jobs()
+            if args.batch_action == "query_download"
+            else query_all_remote_batch_jobs(max_jobs=args.max_jobs)
+        )
+        if not rows:
+            print("\nDone.")
+            return
 
+        selection = args.job
+        if not selection:
+            selection = input(
+                "\nSelect job(s) to download (index/job_id, comma separated), "
+                "or press Enter to skip: "
+            ).strip()
+        if not selection:
+            print("\nDone.")
+            return
+
+        selected_job_ids: list[str] = []
+        tokens = [token.strip() for token in selection.split(",") if token.strip()]
+        for token in tokens:
+            if token.isdigit():
+                idx = int(token) - 1
+                if 0 <= idx < len(rows):
+                    selected_job_ids.append(rows[idx]["job_id"])
+                else:
+                    print(f"Invalid index: {token}")
+            else:
+                selected_job_ids.append(token)
+
+        total_downloaded = 0
+        for job_id in selected_job_ids:
+            _, count = download_batch_job_by_id(job_id, append_output=True)
+            total_downloaded += count
+        print(f"\nDownloaded and appended total {total_downloaded} samples.")
+        print("\nDone.")
+        return
+
+    languages = ["en", "zh", "es"] if args.lang == "all" else [args.lang]
     for lang in languages:
         print(f"\n{'=' * 60}")
-        print(f"Synthesizing Type B data: lang={lang}")
+        print(f"Type B operation: {args.batch_action}, lang={lang}")
         print(f"  headline: {args.n_headline} rows, keyword: {args.n_keyword} rows")
         print(f"{'=' * 60}")
+
+        if args.batch_action == "submit":
+            if args.backend != "batch_api":
+                raise ValueError("submit action requires --backend batch_api")
+            job_ids = submit_type_b_batch_jobs(
+                lang=lang,
+                n_headline=args.n_headline,
+                n_keyword=args.n_keyword,
+                seed=args.seed,
+            )
+            if job_ids:
+                print("  Submitted job ids:")
+                for job_id in job_ids:
+                    print(f"    - {job_id}")
+            else:
+                print("  No jobs submitted.")
+            continue
 
         samples = synthesize_for_language(
             lang=lang,
             n_headline=args.n_headline,
             n_keyword=args.n_keyword,
+            backend=args.backend,
             seed=args.seed,
         )
-
         output_path = save_synthesized(samples, lang)
         print(f"\nSaved: {output_path} ({len(samples)} rows)")
 

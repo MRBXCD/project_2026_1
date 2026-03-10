@@ -46,6 +46,8 @@ Dependencies:
 """
 
 import argparse
+import json
+import re
 from pathlib import Path
 
 import datasets
@@ -166,11 +168,13 @@ def run_format_sft() -> None:
 
     # 1. Load Unified Intermediate Format, grouped by source
     unified_datasets = _load_unified_datasets()
+    exclude_texts = _load_reward_used_texts()
 
     # 2. Call formatter
     sft_ds = format_sft(
         unified_datasets,
         synthesized_dir=SYNTHESIZED_DIR,
+        exclude_texts=exclude_texts,
     )
 
     # 3. Save
@@ -297,6 +301,40 @@ def _load_unified_datasets() -> dict[str, datasets.Dataset]:
     return result
 
 
+def _load_reward_used_texts() -> set[str]:
+    """Load normalized texts already used by reward pairs (chosen + rejected)."""
+    reward_files = [
+        REWARD_DIR / "preference_train.jsonl",
+        REWARD_DIR / "preference_val.jsonl",
+    ]
+    available_files = [path for path in reward_files if path.exists()]
+    if not available_files:
+        print("  [sft] reward exclusion: no preference files found, skip exclusion")
+        return set()
+
+    def _normalize(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    excluded = set()
+    for path in available_files:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                for key in ("chosen", "rejected"):
+                    messages = row.get(key, [])
+                    if not messages:
+                        continue
+                    content = messages[0].get("content", "")
+                    normalized = _normalize(content)
+                    if normalized:
+                        excluded.add(normalized)
+    print(f"  [sft] reward exclusion: loaded {len(excluded)} texts")
+    return excluded
+
+
 # ============================================================
 # Main Entry
 # ============================================================
@@ -355,6 +393,12 @@ def main():
             seed=args.seed,
         )
 
+    if stage == "format_reward" or run_all:
+        print("=" * 60)
+        print("Stage: format_reward (Unified Intermediate Format → Preference Pairs)")
+        print("=" * 60)
+        run_format_reward()
+
     if stage == "format_sft" or run_all:
         print("=" * 60)
         print("Stage: format_sft (Unified Intermediate Format → SFT Data)")
@@ -366,12 +410,6 @@ def main():
         print("Stage: format_grpo (SemEval → GRPO Prompt)")
         print("=" * 60)
         run_format_grpo(eval_ratio=args.eval_ratio, seed=args.seed)
-
-    if stage == "format_reward" or run_all:
-        print("=" * 60)
-        print("Stage: format_reward (Unified Intermediate Format → Preference Pairs)")
-        print("=" * 60)
-        run_format_reward()
 
     print()
     print("Done.")

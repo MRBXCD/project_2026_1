@@ -25,3 +25,5 @@ wandb/
 .pytest_cache/
 
 *.zip
+
+commits/

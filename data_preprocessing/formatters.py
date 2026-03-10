@@ -29,6 +29,7 @@ Dependencies:
 """
 
 import random
+import re
 from pathlib import Path
 
 import datasets
@@ -51,8 +52,30 @@ from data_preprocessing.prompt_templates import (
 REWARD_PAIR_ALLOCATION = {
     "en": {"score_based": 7_000, "synthesized": 7_000},
     "es": {"score_based": 7_000, "synthesized": 7_000},
-    "zh": {"score_based": None, "synthesized": 13_000},
+    "zh": {"score_based": 7_000, "synthesized": 7_000},
 }
+
+# Fine-grained score-bucket configuration for reward pair construction
+REWARD_SCORE_BUCKETS = 4
+REWARD_PAIR_TEMPLATES = [(3, 2), (2, 1), (1, 0), (3, 1), (2, 0), (3, 0)]
+REWARD_TEMPLATE_RATIOS = {
+    (3, 2): 0.20,
+    (2, 1): 0.18,
+    (1, 0): 0.12,
+    (3, 1): 0.16,
+    (2, 0): 0.14,
+    (3, 0): 0.20,
+}
+# Deprecated in current reward sampling policy.
+# Synthesized data is now controlled only by explicit per-language
+# allocation caps in REWARD_PAIR_ALLOCATION[*]["synthesized"].
+MAX_SYNTH_RATIO_BY_LANG: dict[str, float] = {}
+MAX_REUSE_PER_CHOSEN_BY_LANG = {"en": 4, "es": 5, "zh": 6}
+MAX_REUSE_PER_REJECTED_BY_LANG = {"en": 4, "es": 5, "zh": 6}
+MAX_PAIR_REUSE_ROUNDS = 3
+REUSE_MONITOR_ENABLED = True
+REUSE_WARN_RATIO = 0.8
+REUSE_STATS_EXPORT_PATH = None
 
 
 # ============================================================
@@ -63,6 +86,7 @@ def format_sft_type_a(
     unified_datasets: dict[str, datasets.Dataset],
     score_thresholds: dict[str, float | None] | None = None,
     max_samples_per_source: dict[str, int | None] | None = None,
+    exclude_texts: set[str] | None = None,
     seed: int = 42,
 ) -> datasets.Dataset:
     """Convert Unified Intermediate Format humor data to SFT Type A training format.
@@ -93,6 +117,9 @@ def format_sft_type_a(
                 cfun: 5000 (164K is too many, downsampling needed to balance languages)
                 Others: None (no limit)
 
+        exclude_texts: Optional set of assistant texts to exclude from SFT.
+            Matching uses normalized whitespace (strip + collapse inner spaces).
+
         seed: Random seed for reproducibility of downsampling and prompt selection
 
     Returns:
@@ -119,6 +146,11 @@ def format_sft_type_a(
     # useful when we have too many parameters to handle.
     thresholds = {**default_thresholds, **(score_thresholds or {})}
     max_samples = {**default_max_samples, **(max_samples_per_source or {})}
+    normalized_exclude_texts = {
+        re.sub(r"\s+", " ", text).strip()
+        for text in (exclude_texts or set())
+        if text is not None
+    }
 
     rng = random.Random(seed)
     filtered_parts = []
@@ -142,7 +174,16 @@ def format_sft_type_a(
         if cap is not None and len(ds) > cap:
             ds = ds.shuffle(seed=seed).select(range(cap))
 
-        print(f"  [sft_type_a] {source_name}: {len(ds)} rows (after filtering)")
+        before_exclude = len(ds)
+        if normalized_exclude_texts:
+            ds = ds.filter(
+                lambda x, blocked=normalized_exclude_texts: re.sub(r"\s+", " ", x["text"]).strip() not in blocked
+            )
+        after_exclude = len(ds)
+        removed = before_exclude - after_exclude
+        print(
+            f"  [sft_type_a] {source_name}: before={before_exclude} after={after_exclude} removed={removed}"
+        )
         filtered_parts.append(ds)
 
     # 3. Merge all data sources
@@ -366,6 +407,152 @@ def format_grpo(
 # Formatter 4: Reward Model Preference Pairs
 # ============================================================
 
+def _weighted_pick_index(
+    candidate_indices: list[int],
+    remaining_quota: list[int],
+    rng: random.Random,
+) -> int | None:
+    """Pick one index using remaining quota as weights."""
+    if not candidate_indices:
+        return None
+    total_weight = 0
+    for idx in candidate_indices:
+        total_weight += max(remaining_quota[idx], 0)
+    if total_weight <= 0:
+        return rng.choice(candidate_indices)
+
+    threshold = rng.uniform(0, total_weight)
+    cumulative = 0.0
+    for idx in candidate_indices:
+        cumulative += max(remaining_quota[idx], 0)
+        if cumulative >= threshold:
+            return idx
+    return candidate_indices[-1]
+
+
+def _percentile_nearest_rank(values: list[int], percentile: float) -> int:
+    """Return nearest-rank percentile from non-empty integer values."""
+    if not values:
+        return 0
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    rank = max(1, int(round(percentile * n)))
+    rank = min(rank, n)
+    return sorted_values[rank - 1]
+
+
+def _summarize_reuse_counts(counts: dict[str, int]) -> dict[str, float | int]:
+    """Compute reuse summary stats for logging."""
+    values = list(counts.values())
+    if not values:
+        return {
+            "n_items": 0,
+            "mean": 0.0,
+            "p50": 0,
+            "p90": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0,
+        }
+    return {
+        "n_items": len(values),
+        "mean": sum(values) / len(values),
+        "p50": _percentile_nearest_rank(values, 0.50),
+        "p90": _percentile_nearest_rank(values, 0.90),
+        "p95": _percentile_nearest_rank(values, 0.95),
+        "p99": _percentile_nearest_rank(values, 0.99),
+        "max": max(values),
+    }
+
+
+def _make_bucket_indices(scores: list[float], bucket_count: int, rng: random.Random) -> dict[int, list[int]]:
+    """Split score indices into quantile-like buckets with random tie-breaking."""
+    n = len(scores)
+    indices = list(range(n))
+    rng.shuffle(indices)
+    indices.sort(key=lambda i: scores[i])
+    buckets: dict[int, list[int]] = {}
+    for bucket_idx in range(bucket_count):
+        start = int(n * bucket_idx / bucket_count)
+        end = int(n * (bucket_idx + 1) / bucket_count)
+        buckets[bucket_idx] = indices[start:end]
+    return buckets
+
+
+def _allocate_target_by_ratios(
+    total_target: int,
+    templates: list[tuple[int, int]],
+    ratios: dict[tuple[int, int], float],
+) -> dict[tuple[int, int], int]:
+    """Allocate integer template targets by ratios with largest remainder."""
+    if total_target <= 0:
+        return {tpl: 0 for tpl in templates}
+    raw = {tpl: total_target * ratios.get(tpl, 0.0) for tpl in templates}
+    base = {tpl: int(raw[tpl]) for tpl in templates}
+    remainder = total_target - sum(base.values())
+    order = sorted(
+        templates,
+        key=lambda tpl: (raw[tpl] - base[tpl], ratios.get(tpl, 0.0)),
+        reverse=True,
+    )
+    for tpl in order[:remainder]:
+        base[tpl] += 1
+    return base
+
+
+def _build_pairs_with_limits(
+    chosen_texts: list[str],
+    rejected_texts: list[str],
+    target_pairs: int,
+    max_reuse_per_chosen: int,
+    max_reuse_per_rejected: int,
+    max_attempts: int,
+    rng: random.Random,
+) -> tuple[list[tuple[str, str]], dict[str, int], dict[str, int], int]:
+    """Build unique chosen/rejected pairs under bidirectional reuse limits."""
+    if target_pairs <= 0 or not chosen_texts or not rejected_texts:
+        return [], {}, {}, 0
+
+    chosen_count = [0] * len(chosen_texts)
+    rejected_count = [0] * len(rejected_texts)
+    chosen_used: dict[str, int] = {}
+    rejected_used: dict[str, int] = {}
+    used_edges: set[tuple[int, int]] = set()
+    pairs: list[tuple[str, str]] = []
+
+    attempts = 0
+    while len(pairs) < target_pairs and attempts < max_attempts:
+        attempts += 1
+        chosen_candidates = [
+            i for i, used in enumerate(chosen_count) if used < max_reuse_per_chosen
+        ]
+        rejected_candidates = [
+            i for i, used in enumerate(rejected_count) if used < max_reuse_per_rejected
+        ]
+        if not chosen_candidates or not rejected_candidates:
+            break
+
+        chosen_remaining = [max_reuse_per_chosen - used for used in chosen_count]
+        rejected_remaining = [max_reuse_per_rejected - used for used in rejected_count]
+
+        i = _weighted_pick_index(chosen_candidates, chosen_remaining, rng)
+        j = _weighted_pick_index(rejected_candidates, rejected_remaining, rng)
+        if i is None or j is None:
+            break
+        if (i, j) in used_edges:
+            continue
+
+        used_edges.add((i, j))
+        chosen_count[i] += 1
+        rejected_count[j] += 1
+        c_text = chosen_texts[i]
+        r_text = rejected_texts[j]
+        chosen_used[c_text] = chosen_used.get(c_text, 0) + 1
+        rejected_used[r_text] = rejected_used.get(r_text, 0) + 1
+        pairs.append((c_text, r_text))
+
+    return pairs, chosen_used, rejected_used, attempts
+
 def format_reward_pairs(
     unified_datasets: dict[str, datasets.Dataset],
     high_quantile: float = 0.7,
@@ -413,16 +600,28 @@ def format_reward_pairs(
     if allocation is None:
         allocation = REWARD_PAIR_ALLOCATION
     rng = random.Random(seed)
+    import json
 
-    # Scored sources (skip cfun and semeval)
     scored_sources = ["rjokes", "haha", "chinese_humor"]
+    source_lang = {"rjokes": "en", "haha": "es", "chinese_humor": "zh"}
+    active_sources = [s for s in scored_sources if s in unified_datasets]
+    lang_source_counts = {"en": 0, "es": 0, "zh": 0}
+    for source_name in active_sources:
+        lang_source_counts[source_lang[source_name]] += 1
 
-    # source -> language mapping
-    _SOURCE_LANG = {
-        "rjokes": "en",
-        "haha": "es",
-        "chinese_humor": "zh",
-    }
+    # Allocate language score budget to source budget (future-safe if multiple sources per language)
+    source_budget: dict[str, int | None] = {}
+    for lang in ["en", "es", "zh"]:
+        sources = [s for s in active_sources if source_lang[s] == lang]
+        cap = allocation.get(lang, {}).get("score_based")
+        if cap is None or not sources:
+            for s in sources:
+                source_budget[s] = None
+            continue
+        base = cap // len(sources)
+        remainder = cap % len(sources)
+        for idx, s in enumerate(sorted(sources)):
+            source_budget[s] = base + (1 if idx < remainder else 0)
 
     # Collect pairs grouped by language for per-language capping
     lang_pairs: dict[str, dict[str, list]] = {
@@ -430,88 +629,190 @@ def format_reward_pairs(
         "es": {"prompt": [], "chosen": [], "rejected": []},
         "zh": {"prompt": [], "chosen": [], "rejected": []},
     }
+    reuse_monitor_records: list[dict] = []
 
-    # 1. Calculate quantiles and construct preference pairs independently for each source
-    #    Different sources have different score distributions and normalizations
-    #    (rJokes uses Reddit score, HAHA uses funniness_average, Chinese Humor uses HumorLevel),
-    #    so quantiles must be calculated within each source, cannot be calculated after merging.
-    for source_name in scored_sources:
-        if source_name not in unified_datasets:
-            continue
+    template_ratios = REWARD_TEMPLATE_RATIOS.copy()
+    ratio_sum = sum(template_ratios.values()) or 1.0
+    template_ratios = {k: v / ratio_sum for k, v in template_ratios.items()}
 
-        ds = unified_datasets[source_name]
-
-        # Filter out rows with score=None (defensive check)
-        ds = ds.filter(lambda x: x["score"] is not None)
-
+    for source_name in active_sources:
+        ds = unified_datasets[source_name].filter(lambda x: x["score"] is not None)
         if len(ds) == 0:
             continue
 
-        lang = _SOURCE_LANG[source_name]
+        lang = source_lang[source_name]
         scores = ds["score"]
-        n = len(scores)
+        texts = ds["text"]
+        bucket_indices = _make_bucket_indices(scores, REWARD_SCORE_BUCKETS, rng)
+        bucket_texts = {
+            bucket: [texts[i] for i in indices]
+            for bucket, indices in bucket_indices.items()
+        }
 
-        # 1a. Index-based quantile split with random tie-breaking.
-        #     Discrete scores (e.g. rJokes has only 12 unique values) cause
-        #     large groups of ties at quantile boundaries.  Using >= / <=
-        #     would include the entire tie group, violating the intended
-        #     30/40/30 split.  Instead we sort indices with random
-        #     tie-breaking and take exactly the bottom/top slices.
-        indices = list(range(n))
-        rng.shuffle(indices)
-        indices.sort(key=lambda i: scores[i])
-
-        n_low = int(n * low_quantile)
-        n_high = n - int(n * high_quantile)
-
-        low_idx_set = set(indices[:n_low])
-        high_idx_set = set(indices[-n_high:])
-
-        low_texts = [ds[i]["text"] for i in range(n) if i in low_idx_set]
-        high_texts = [ds[i]["text"] for i in range(n) if i in high_idx_set]
-
-        if not high_texts or not low_texts:
-            print(
-                f"  [reward] {source_name} ({lang}): "
-                f"high={len(high_texts)}, low={len(low_texts)}, Skipping (insufficient data)"
-            )
-            continue
-
-        low_max_score = max(scores[i] for i in low_idx_set)
-        high_min_score = min(scores[i] for i in high_idx_set)
         print(
-            f"  [reward] {source_name} ({lang}): "
-            f"high={len(high_texts)} (score>={high_min_score:.3f}), "
-            f"low={len(low_texts)} (score<={low_max_score:.3f}), "
-            f"discarded={n - len(high_texts) - len(low_texts)}"
+            f"  [reward] {source_name} ({lang}) buckets: "
+            + ", ".join(f"Q{b}={len(bucket_texts[b])}" for b in sorted(bucket_texts))
         )
 
-        # 1c. Random pairing: each chosen used max max_pairs_per_chosen times
-        chosen_pool = high_texts * max_pairs_per_chosen
-        rng.shuffle(chosen_pool)
+        config_reuse_chosen = MAX_REUSE_PER_CHOSEN_BY_LANG.get(lang, max_pairs_per_chosen)
+        config_reuse_rejected = MAX_REUSE_PER_REJECTED_BY_LANG.get(lang, max_pairs_per_chosen)
+        # Keep backward compatibility: caller-provided max_pairs_per_chosen limits both sides.
+        max_reuse_per_chosen = min(config_reuse_chosen, max_pairs_per_chosen)
+        max_reuse_per_rejected = min(config_reuse_rejected, max_pairs_per_chosen)
 
-        rejected_pool = low_texts.copy()
-        rng.shuffle(rejected_pool)
-
-        n_pairs = min(len(chosen_pool), len(rejected_pool))
-
-        pairs = lang_pairs[lang]
-        for i in range(n_pairs):
-            prompt_text = get_random_type_a_prompt(lang, rng)
-
-            pairs["prompt"].append(
-                [{"role": "user", "content": prompt_text}]
+        # Estimate template capacities under current reuse constraints.
+        template_capacity: dict[tuple[int, int], int] = {}
+        for tpl in REWARD_PAIR_TEMPLATES:
+            hi, lo = tpl
+            chosen_size = len(bucket_texts.get(hi, []))
+            rejected_size = len(bucket_texts.get(lo, []))
+            cap = min(
+                chosen_size * max_reuse_per_chosen,
+                rejected_size * max_reuse_per_rejected,
+                chosen_size * rejected_size,
             )
-            pairs["chosen"].append(
-                [{"role": "assistant", "content": chosen_pool[i]}]
-            )
-            pairs["rejected"].append(
-                [{"role": "assistant", "content": rejected_pool[i]}]
-            )
+            template_capacity[tpl] = max(cap, 0)
 
-        print(f"  [reward] {source_name} ({lang}): Generated {n_pairs} preference pairs")
+        budget = source_budget.get(source_name)
+        if budget is None:
+            template_target = template_capacity.copy()
+        else:
+            template_target = _allocate_target_by_ratios(budget, REWARD_PAIR_TEMPLATES, template_ratios)
+            for tpl in template_target:
+                template_target[tpl] = min(template_target[tpl], template_capacity[tpl])
 
-    # 2. Apply per-language score_based cap from allocation config
+        template_pairs: dict[tuple[int, int], list[tuple[str, str]]] = {
+            tpl: [] for tpl in REWARD_PAIR_TEMPLATES
+        }
+        template_pair_sets: dict[tuple[int, int], set[tuple[str, str]]] = {
+            tpl: set() for tpl in REWARD_PAIR_TEMPLATES
+        }
+        template_deficit: dict[tuple[int, int], int] = {tpl: 0 for tpl in REWARD_PAIR_TEMPLATES}
+
+        for tpl in REWARD_PAIR_TEMPLATES:
+            hi, lo = tpl
+            chosen_pool = bucket_texts.get(hi, [])
+            rejected_pool = bucket_texts.get(lo, [])
+            target_count = template_target.get(tpl, 0)
+            if target_count <= 0 or not chosen_pool or not rejected_pool:
+                template_deficit[tpl] = target_count
+                continue
+
+            # Compact very large pools to keep pair sampling tractable.
+            chosen_needed = max(1, target_count // max(max_reuse_per_chosen, 1) + 2)
+            rejected_needed = max(1, target_count // max(max_reuse_per_rejected, 1) + 2)
+            chosen_limit = min(len(chosen_pool), chosen_needed * 3)
+            rejected_limit = min(len(rejected_pool), rejected_needed * 3)
+            if len(chosen_pool) > chosen_limit:
+                chosen_pool = rng.sample(chosen_pool, chosen_limit)
+            if len(rejected_pool) > rejected_limit:
+                rejected_pool = rng.sample(rejected_pool, rejected_limit)
+
+            sampled_pairs, _, _, _ = _build_pairs_with_limits(
+                chosen_pool,
+                rejected_pool,
+                target_pairs=target_count,
+                max_reuse_per_chosen=max_reuse_per_chosen,
+                max_reuse_per_rejected=max_reuse_per_rejected,
+                max_attempts=max(target_count * 20 * MAX_PAIR_REUSE_ROUNDS, 200),
+                rng=rng,
+            )
+            for pair in sampled_pairs:
+                if pair not in template_pair_sets[tpl]:
+                    template_pair_sets[tpl].add(pair)
+                    template_pairs[tpl].append(pair)
+
+            template_deficit[tpl] = max(0, target_count - len(template_pairs[tpl]))
+
+            if REUSE_MONITOR_ENABLED:
+                chosen_counts: dict[str, int] = {}
+                rejected_counts: dict[str, int] = {}
+                for c_text, r_text in template_pairs[tpl]:
+                    chosen_counts[c_text] = chosen_counts.get(c_text, 0) + 1
+                    rejected_counts[r_text] = rejected_counts.get(r_text, 0) + 1
+                chosen_stats = _summarize_reuse_counts(chosen_counts)
+                rejected_stats = _summarize_reuse_counts(rejected_counts)
+                reuse_monitor_records.append(
+                    {
+                        "lang": lang,
+                        "source": source_name,
+                        "template": f"Q{hi}>Q{lo}",
+                        "chosen": chosen_stats,
+                        "rejected": rejected_stats,
+                    }
+                )
+                print(
+                    f"  [reward][{lang}][Q{hi}>Q{lo}] target={target_count}, "
+                    f"actual={len(template_pairs[tpl])}, deficit={template_deficit[tpl]}"
+                )
+                print(
+                    f"    chosen_reuse p95={chosen_stats['p95']} p99={chosen_stats['p99']} "
+                    f"max={chosen_stats['max']}"
+                )
+                print(
+                    f"    rejected_reuse p95={rejected_stats['p95']} p99={rejected_stats['p99']} "
+                    f"max={rejected_stats['max']}"
+                )
+                if chosen_stats["p99"] > max_reuse_per_chosen:
+                    print("    [ERROR] chosen reuse p99 exceeds configured cap")
+                elif chosen_stats["p95"] > max_reuse_per_chosen * REUSE_WARN_RATIO:
+                    print("    [WARN] chosen reuse p95 near cap")
+                if rejected_stats["p99"] > max_reuse_per_rejected:
+                    print("    [ERROR] rejected reuse p99 exceeds configured cap")
+                elif rejected_stats["p95"] > max_reuse_per_rejected * REUSE_WARN_RATIO:
+                    print("    [WARN] rejected reuse p95 near cap")
+
+        # Phase 3: in-language redistribution after resampling
+        if budget is not None:
+            generated = sum(len(template_pairs[tpl]) for tpl in REWARD_PAIR_TEMPLATES)
+            shortage = max(0, budget - generated)
+            if shortage > 0:
+                extra_targets = _allocate_target_by_ratios(shortage, REWARD_PAIR_TEMPLATES, template_ratios)
+                for tpl in REWARD_PAIR_TEMPLATES:
+                    hi, lo = tpl
+                    chosen_pool = bucket_texts.get(hi, [])
+                    rejected_pool = bucket_texts.get(lo, [])
+                    extra_target = extra_targets.get(tpl, 0)
+                    if extra_target <= 0 or not chosen_pool or not rejected_pool:
+                        continue
+                    chosen_needed = max(1, extra_target // max(max_reuse_per_chosen, 1) + 2)
+                    rejected_needed = max(1, extra_target // max(max_reuse_per_rejected, 1) + 2)
+                    chosen_limit = min(len(chosen_pool), chosen_needed * 3)
+                    rejected_limit = min(len(rejected_pool), rejected_needed * 3)
+                    if len(chosen_pool) > chosen_limit:
+                        chosen_pool = rng.sample(chosen_pool, chosen_limit)
+                    if len(rejected_pool) > rejected_limit:
+                        rejected_pool = rng.sample(rejected_pool, rejected_limit)
+                    sampled_pairs, _, _, _ = _build_pairs_with_limits(
+                        chosen_pool,
+                        rejected_pool,
+                        target_pairs=extra_target,
+                        max_reuse_per_chosen=max_reuse_per_chosen,
+                        max_reuse_per_rejected=max_reuse_per_rejected,
+                        max_attempts=max(extra_target * 20, 200),
+                        rng=rng,
+                    )
+                    before = len(template_pairs[tpl])
+                    for pair in sampled_pairs:
+                        if pair not in template_pair_sets[tpl]:
+                            template_pair_sets[tpl].add(pair)
+                            template_pairs[tpl].append(pair)
+                    added = len(template_pairs[tpl]) - before
+                    if added > 0:
+                        print(f"  [reward][{lang}][Q{hi}>Q{lo}] redistribution added {added} pairs")
+
+        # Flatten template pairs into language pairs
+        source_generated = 0
+        for tpl in REWARD_PAIR_TEMPLATES:
+            for chosen_text, rejected_text in template_pairs[tpl]:
+                prompt_text = get_random_type_a_prompt(lang, rng)
+                lang_pairs[lang]["prompt"].append([{"role": "user", "content": prompt_text}])
+                lang_pairs[lang]["chosen"].append([{"role": "assistant", "content": chosen_text}])
+                lang_pairs[lang]["rejected"].append([{"role": "assistant", "content": rejected_text}])
+                source_generated += 1
+        print(f"  [reward] {source_name} ({lang}): generated {source_generated} score-based pairs")
+
+    # Apply per-language score_based cap from allocation config
     for lang, pairs in lang_pairs.items():
         n_raw = len(pairs["prompt"])
         cap = allocation.get(lang, {}).get("score_based")
@@ -523,9 +824,16 @@ def format_reward_pairs(
                 pairs[key] = [pairs[key][i] for i in selected]
             print(f"  [reward] Downsampled {lang} score-based: {n_raw} -> {cap}")
 
-    # 3. Load synthesized hard-negative pairs, apply per-language synthesized cap
-    import json
+    # Optionally export reuse stats
+    if REUSE_MONITOR_ENABLED and REUSE_STATS_EXPORT_PATH:
+        export_path = Path(REUSE_STATS_EXPORT_PATH)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(export_path, "w", encoding="utf-8") as f:
+            for record in reuse_monitor_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"  [reward] Reuse stats exported: {export_path}")
 
+    # Load synthesized hard-negative pairs, apply per-language synthesized cap
     synth_counts: dict[str, int] = {"en": 0, "zh": 0, "es": 0}
     synth_pairs: dict[str, dict[str, list]] = {
         lang: {"prompt": [], "chosen": [], "rejected": []}
@@ -547,10 +855,13 @@ def format_reward_pairs(
                             continue
                         records.append(json.loads(line))
 
-                synth_cap = allocation.get(lang, {}).get("synthesized")
-                if synth_cap is not None and len(records) > synth_cap:
+                synth_cap_cfg = allocation.get(lang, {}).get("synthesized")
+                final_cap = synth_cap_cfg if synth_cap_cfg is not None else len(records)
+                final_cap = max(0, final_cap)
+
+                if len(records) > final_cap:
                     rng.shuffle(records)
-                    records = records[:synth_cap]
+                    records = records[:final_cap]
 
                 for record in records:
                     synth_pairs[lang]["prompt"].append(record["prompt"])
@@ -560,12 +871,12 @@ def format_reward_pairs(
                 synth_counts[lang] = len(records)
                 print(
                     f"  [reward] Loaded {len(records)} synthesized pairs for {lang} "
-                    f"from {synth_file.name}"
+                    f"(cfg_cap={synth_cap_cfg}) from {synth_file.name}"
                 )
         else:
             print(f"  [reward] Synthesized dir {synth_dir} does not exist, skipping")
 
-    # 4. Merge score-based + synthesized, print composition summary
+    # Merge score-based + synthesized, print composition summary
     all_pairs: dict[str, list] = {"prompt": [], "chosen": [], "rejected": []}
 
     print()
@@ -589,16 +900,11 @@ def format_reward_pairs(
     if not all_pairs["prompt"]:
         raise ValueError("Failed to generate any preference pairs, please check data and parameters")
 
-    # 5. Convert to Dataset
     pairs_ds = datasets.Dataset.from_dict(all_pairs)
-
-    # 6. Shuffle + Split train / validation
     split = pairs_ds.train_test_split(test_size=val_ratio, seed=seed)
-
     result = datasets.DatasetDict({
         "train": split["train"],
         "validation": split["test"],
     })
-
     print(f"  [reward] Final: train={len(result['train'])}, validation={len(result['validation'])}")
     return result
