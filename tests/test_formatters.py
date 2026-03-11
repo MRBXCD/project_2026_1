@@ -368,6 +368,28 @@ class TestFineGrainedRewardBehavior:
         assert checked > 0
         assert strict_better > 0
 
+    def test_train_validation_do_not_share_score_based_texts(self):
+        """Score-based train/validation splits should not reuse original texts across splits."""
+        unified = _make_mock_unified(n_en=80, n_es=80, n_zh=80)
+        result = format_reward_pairs(
+            unified,
+            allocation=_NO_CAP_ALLOCATION,
+            synthesized_reward_dir=None,
+            seed=42,
+        )
+
+        train_texts = set()
+        for row in result["train"]:
+            train_texts.add(row["chosen"][0]["content"])
+            train_texts.add(row["rejected"][0]["content"])
+
+        validation_texts = set()
+        for row in result["validation"]:
+            validation_texts.add(row["chosen"][0]["content"])
+            validation_texts.add(row["rejected"][0]["content"])
+
+        assert train_texts.isdisjoint(validation_texts)
+
     def test_synthesized_ratio_cap_applies(self, tmp_path):
         """Synthesized count should be capped by score-based ratio limit."""
         unified = _make_mock_unified(n_en=40, n_es=40, n_zh=20)

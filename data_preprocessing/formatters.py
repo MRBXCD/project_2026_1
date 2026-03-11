@@ -28,6 +28,7 @@ Dependencies:
     - prompt_templates (Local)
 """
 
+import json
 import random
 import re
 from pathlib import Path
@@ -92,10 +93,10 @@ def format_sft_type_a(
     """Convert Unified Intermediate Format humor data to SFT Type A training format.
 
     Processing Flow:
-        1. Quality filtering for each data source (by score threshold)
-        2. Optional downsampling for each data source (to control language balance)
+        1. Exclude texts already used in reward data
+        2. Select fixed-size source subsets for Type A construction
         3. Assign a random Type A prompt to each joke to construct messages format
-        4. Merge all data sources
+        4. Merge all selected sources
 
     Args:
         unified_datasets: Dictionary of Unified Intermediate Format datasets output by parser.
@@ -103,91 +104,81 @@ def format_sft_type_a(
             Values are Datasets, schema: {text, lang, score, source}.
             Note: Should not contain "semeval".
 
-        score_thresholds: Minimum score threshold for each source (after normalization).
-            Samples below threshold are filtered. None or missing source means no filtering.
-            Defaults:
-                rjokes: 0.25 (corresponds to raw score >= 5)
-                cfun: None (no score, no filtering)
-                haha: 0.01 (exclude data with is_humor=0, i.e., score > 0)
-                chinese_humor: 0.8 (corresponds to HumorLevel >= 4)
+        score_thresholds: Retained for backward compatibility and currently unused.
 
-        max_samples_per_source: Maximum number of samples per source (downsampling).
-            None or missing source means no limit.
-            Defaults:
-                cfun: 5000 (164K is too many, downsampling needed to balance languages)
-                Others: None (no limit)
+        max_samples_per_source: Retained for backward compatibility and currently unused.
 
         exclude_texts: Optional set of assistant texts to exclude from SFT.
             Matching uses normalized whitespace (strip + collapse inner spaces).
 
-        seed: Random seed for reproducibility of downsampling and prompt selection
+        seed: Random seed for reproducibility of sampling and prompt selection
 
     Returns:
         datasets.Dataset: SFT Type A data
             - messages (list[dict]): Chat format dialogue
               [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
     """
-    # 1. Define default thresholds and downsampling counts
-    default_thresholds = {
-        "rjokes": 0.25,         # Raw score >= 5
-        "cfun": None,           # No score, no filtering
-        "haha": 0.01,           # Exclude is_humor=0 (score=0.0)
-        "chinese_humor": 0.8,   # HumorLevel >= 4
+    # Fixed Type A source policy:
+    # - rjokes: top 1000 by score
+    # - haha: top 1000 by score
+    # - cfun: random 1000
+    # - chinese_humor: excluded from SFT Type A
+    source_selection = {
+        "rjokes": {"strategy": "top_by_score", "count": 1000},
+        "haha": {"strategy": "top_by_score", "count": 1000},
+        "cfun": {"strategy": "random", "count": 1000},
     }
-    default_max_samples = {
-        "rjokes": None,
-        "cfun": 5000,           # 164K is too many, downsample to balance languages
-        "haha": None,
-        "chinese_humor": None,
-    }
-    
-    # This is a kind of new parameter handling method. 
-    # It is used to merge the default parameters and the custom parameters.
-    # useful when we have too many parameters to handle.
-    thresholds = {**default_thresholds, **(score_thresholds or {})}
-    max_samples = {**default_max_samples, **(max_samples_per_source or {})}
     normalized_exclude_texts = {
         re.sub(r"\s+", " ", text).strip()
         for text in (exclude_texts or set())
         if text is not None
     }
 
-    rng = random.Random(seed)
-    filtered_parts = []
+    selected_parts = []
 
-    # 2. Filter and downsample each data source
-    # Only process unified intermediate format sources, skip semeval
-    unified_source_names = [k for k in unified_datasets if k != "semeval"]
+    def _apply_exclusion(ds: datasets.Dataset) -> datasets.Dataset:
+        if not normalized_exclude_texts:
+            return ds
+        return ds.filter(
+            lambda x, blocked=normalized_exclude_texts: re.sub(r"\s+", " ", x["text"]).strip() not in blocked
+        )
 
-    for source_name in unified_source_names:
+    # 2. Select source subsets for Type A
+    for source_name, config in source_selection.items():
+        if source_name not in unified_datasets:
+            print(f"  [sft_type_a] {source_name}: source not found, skipping")
+            continue
+
         ds = unified_datasets[source_name]
-
-        # 2a. Filter by score threshold
-        threshold = thresholds.get(source_name)
-        if threshold is not None:
-            ds = ds.filter(
-                lambda x, t=threshold: x["score"] is not None and x["score"] >= t
-            )
-
-        # 2b. Downsample
-        cap = max_samples.get(source_name)
-        if cap is not None and len(ds) > cap:
-            ds = ds.shuffle(seed=seed).select(range(cap))
-
         before_exclude = len(ds)
-        if normalized_exclude_texts:
-            ds = ds.filter(
-                lambda x, blocked=normalized_exclude_texts: re.sub(r"\s+", " ", x["text"]).strip() not in blocked
-            )
+        ds = _apply_exclusion(ds)
         after_exclude = len(ds)
         removed = before_exclude - after_exclude
+
+        target_count = config["count"]
+        strategy = config["strategy"]
+        if strategy == "top_by_score":
+            ds = ds.filter(lambda x: x["score"] is not None)
+            ds = ds.sort("score", reverse=True)
+            selected_count = min(len(ds), target_count)
+            ds = ds.select(range(selected_count))
+        elif strategy == "random":
+            selected_count = min(len(ds), target_count)
+            if len(ds) > selected_count:
+                ds = ds.shuffle(seed=seed).select(range(selected_count))
+        else:
+            raise ValueError(f"Unsupported Type A selection strategy: {strategy}")
+
         print(
-            f"  [sft_type_a] {source_name}: before={before_exclude} after={after_exclude} removed={removed}"
+            f"  [sft_type_a] {source_name}: before={before_exclude} after_exclude={after_exclude} "
+            f"removed={removed} selected={len(ds)} strategy={strategy}"
         )
-        filtered_parts.append(ds)
+        selected_parts.append(ds)
 
     # 3. Merge all data sources
-    merged = datasets.concatenate_datasets(filtered_parts)
+    if not selected_parts:
+        raise ValueError("No Type A SFT samples were selected. Please check the input data and exclusions.")
+    merged = datasets.concatenate_datasets(selected_parts)
     print(f"  [sft_type_a] Total after merge: {len(merged)} rows")
 
     # 4. Construct messages format for each sample
@@ -553,77 +544,116 @@ def _build_pairs_with_limits(
 
     return pairs, chosen_used, rejected_used, attempts
 
-def format_reward_pairs(
+
+def _normalize_reward_text(text: str) -> str:
+    """Normalize reward text for split assignment and leakage checks."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _compute_validation_count(total_count: int, val_ratio: float) -> int:
+    """Compute validation count while keeping at least one train item when possible."""
+    if total_count <= 1 or val_ratio <= 0.0:
+        return 0
+    validation_count = int(total_count * val_ratio)
+    validation_count = max(1, validation_count)
+    validation_count = min(validation_count, total_count - 1)
+    return validation_count
+
+
+def _split_budget_by_weights(
+    total_budget: int | None,
+    train_weight: int,
+    validation_weight: int,
+) -> tuple[int | None, int | None]:
+    """Split an integer budget across train/validation using proportional weights."""
+    if total_budget is None:
+        return None, None
+    if total_budget <= 0:
+        return 0, 0
+
+    total_weight = train_weight + validation_weight
+    if total_weight <= 0:
+        return total_budget, 0
+
+    validation_budget = int(total_budget * validation_weight / total_weight)
+    validation_budget = min(validation_budget, total_budget)
+    train_budget = total_budget - validation_budget
+    return train_budget, validation_budget
+
+
+def _split_reward_source_datasets(
     unified_datasets: dict[str, datasets.Dataset],
-    high_quantile: float = 0.7,
-    low_quantile: float = 0.3,
-    max_pairs_per_chosen: int = 3,
-    allocation: dict[str, dict[str, int | None]] | None = None,
-    synthesized_reward_dir: str | Path | None = None,
-    val_ratio: float = 0.1,
-    seed: int = 42,
-) -> datasets.DatasetDict:
-    """Construct Reward Model preference pairs from Unified Intermediate Format data.
-
-    Processing Flow:
-        1. Generate score-based pairs per source (quantile split with tie-breaking)
-        2. Load synthesized hard-negative pairs
-        3. Apply per-language allocation caps (score_based and synthesized independently)
-        4. Merge all languages, shuffle, split train/val
-
-    Args:
-        unified_datasets: Dictionary of Unified Intermediate Format datasets output by parser.
-            Only uses sources with scores (rjokes, haha, chinese_humor),
-            Automatically skips sources with score=None (cfun) and non-unified format (semeval).
-
-        high_quantile: Minimum percentile for high score group. Default 0.7 (Top 30% are chosen).
-        low_quantile: Maximum percentile for low score group. Default 0.3 (Bottom 30% are rejected).
-        max_pairs_per_chosen: Max number of pairs per chosen sample.
-            Prevents reusing the same good joke too many times. Default 3.
-        allocation: Per-language allocation config.  Each language maps to
-            {"score_based": int|None, "synthesized": int|None} where None means
-            "use all available".  Defaults to REWARD_PAIR_ALLOCATION module constant.
-        synthesized_reward_dir: Directory containing synthesized hard-negative preference
-            pair files (reward_neg_en.jsonl, reward_neg_zh.jsonl, reward_neg_es.jsonl).
-            If set and directory exists, these files are loaded and merged into the
-            preference pairs. None means no synthesized data is loaded.
-        val_ratio: Validation set ratio. Default 0.1.
-        seed: Random seed.
-
-    Returns:
-        datasets.DatasetDict: Contains "train" and "validation" splits
-            Schema for each split:
-            - prompt (list[dict]):   [{"role": "user", "content": "..."}]
-            - chosen (list[dict]):   [{"role": "assistant", "content": "High score joke"}]
-            - rejected (list[dict]): [{"role": "assistant", "content": "Low score joke"}]
-    """
-    if allocation is None:
-        allocation = REWARD_PAIR_ALLOCATION
+    val_ratio: float,
+    seed: int,
+) -> tuple[dict[str, dict[str, datasets.Dataset]], dict[str, str]]:
+    """Split unified datasets by normalized original text before pair construction."""
     rng = random.Random(seed)
-    import json
+    split_datasets = {
+        "train": {},
+        "validation": {},
+    }
+    text_to_split: dict[str, str] = {}
 
+    for source_name, dataset in unified_datasets.items():
+        if len(dataset) == 0:
+            split_datasets["train"][source_name] = dataset
+            split_datasets["validation"][source_name] = dataset
+            continue
+
+        text_to_indices: dict[str, list[int]] = {}
+        for row_idx, text in enumerate(dataset["text"]):
+            normalized_text = _normalize_reward_text(text)
+            text_to_indices.setdefault(normalized_text, []).append(row_idx)
+
+        unique_texts = list(text_to_indices)
+        existing_texts = [text for text in unique_texts if text in text_to_split]
+        new_texts = [text for text in unique_texts if text not in text_to_split]
+        rng.shuffle(new_texts)
+
+        validation_target = _compute_validation_count(len(unique_texts), val_ratio)
+        existing_validation = sum(
+            1 for text in existing_texts if text_to_split[text] == "validation"
+        )
+        new_validation_needed = max(0, validation_target - existing_validation)
+        new_validation_needed = min(new_validation_needed, len(new_texts))
+
+        for idx, normalized_text in enumerate(new_texts):
+            split_name = "validation" if idx < new_validation_needed else "train"
+            text_to_split[normalized_text] = split_name
+
+        train_indices: list[int] = []
+        validation_indices: list[int] = []
+        for normalized_text, row_indices in text_to_indices.items():
+            split_name = text_to_split[normalized_text]
+            if split_name == "validation":
+                validation_indices.extend(row_indices)
+            else:
+                train_indices.extend(row_indices)
+
+        split_datasets["train"][source_name] = dataset.select(train_indices)
+        split_datasets["validation"][source_name] = dataset.select(validation_indices)
+
+        print(
+            f"  [reward] source split {source_name}: "
+            f"train_rows={len(train_indices)} validation_rows={len(validation_indices)} "
+            f"unique_texts={len(unique_texts)}"
+        )
+
+    return split_datasets, text_to_split
+
+
+def _build_score_based_pairs_for_split(
+    split_name: str,
+    split_sources: dict[str, datasets.Dataset],
+    source_budget: dict[str, int | None],
+    max_pairs_per_chosen: int,
+    seed: int,
+) -> tuple[dict[str, dict[str, list]], list[dict]]:
+    """Generate score-based reward pairs for one split from pre-split source texts."""
+    rng = random.Random(seed)
     scored_sources = ["rjokes", "haha", "chinese_humor"]
     source_lang = {"rjokes": "en", "haha": "es", "chinese_humor": "zh"}
-    active_sources = [s for s in scored_sources if s in unified_datasets]
-    lang_source_counts = {"en": 0, "es": 0, "zh": 0}
-    for source_name in active_sources:
-        lang_source_counts[source_lang[source_name]] += 1
-
-    # Allocate language score budget to source budget (future-safe if multiple sources per language)
-    source_budget: dict[str, int | None] = {}
-    for lang in ["en", "es", "zh"]:
-        sources = [s for s in active_sources if source_lang[s] == lang]
-        cap = allocation.get(lang, {}).get("score_based")
-        if cap is None or not sources:
-            for s in sources:
-                source_budget[s] = None
-            continue
-        base = cap // len(sources)
-        remainder = cap % len(sources)
-        for idx, s in enumerate(sorted(sources)):
-            source_budget[s] = base + (1 if idx < remainder else 0)
-
-    # Collect pairs grouped by language for per-language capping
+    active_sources = [source for source in scored_sources if source in split_sources]
     lang_pairs: dict[str, dict[str, list]] = {
         "en": {"prompt": [], "chosen": [], "rejected": []},
         "es": {"prompt": [], "chosen": [], "rejected": []},
@@ -633,39 +663,38 @@ def format_reward_pairs(
 
     template_ratios = REWARD_TEMPLATE_RATIOS.copy()
     ratio_sum = sum(template_ratios.values()) or 1.0
-    template_ratios = {k: v / ratio_sum for k, v in template_ratios.items()}
+    template_ratios = {key: value / ratio_sum for key, value in template_ratios.items()}
 
     for source_name in active_sources:
-        ds = unified_datasets[source_name].filter(lambda x: x["score"] is not None)
-        if len(ds) == 0:
+        dataset = split_sources[source_name].filter(lambda x: x["score"] is not None)
+        if len(dataset) == 0:
+            print(f"  [reward][{split_name}] {source_name}: no scored rows after split")
             continue
 
         lang = source_lang[source_name]
-        scores = ds["score"]
-        texts = ds["text"]
+        scores = dataset["score"]
+        texts = dataset["text"]
         bucket_indices = _make_bucket_indices(scores, REWARD_SCORE_BUCKETS, rng)
         bucket_texts = {
-            bucket: [texts[i] for i in indices]
+            bucket: [texts[idx] for idx in indices]
             for bucket, indices in bucket_indices.items()
         }
 
         print(
-            f"  [reward] {source_name} ({lang}) buckets: "
-            + ", ".join(f"Q{b}={len(bucket_texts[b])}" for b in sorted(bucket_texts))
+            f"  [reward][{split_name}] {source_name} ({lang}) buckets: "
+            + ", ".join(f"Q{bucket}={len(bucket_texts[bucket])}" for bucket in sorted(bucket_texts))
         )
 
         config_reuse_chosen = MAX_REUSE_PER_CHOSEN_BY_LANG.get(lang, max_pairs_per_chosen)
         config_reuse_rejected = MAX_REUSE_PER_REJECTED_BY_LANG.get(lang, max_pairs_per_chosen)
-        # Keep backward compatibility: caller-provided max_pairs_per_chosen limits both sides.
         max_reuse_per_chosen = min(config_reuse_chosen, max_pairs_per_chosen)
         max_reuse_per_rejected = min(config_reuse_rejected, max_pairs_per_chosen)
 
-        # Estimate template capacities under current reuse constraints.
         template_capacity: dict[tuple[int, int], int] = {}
         for tpl in REWARD_PAIR_TEMPLATES:
-            hi, lo = tpl
-            chosen_size = len(bucket_texts.get(hi, []))
-            rejected_size = len(bucket_texts.get(lo, []))
+            high_bucket, low_bucket = tpl
+            chosen_size = len(bucket_texts.get(high_bucket, []))
+            rejected_size = len(bucket_texts.get(low_bucket, []))
             cap = min(
                 chosen_size * max_reuse_per_chosen,
                 rejected_size * max_reuse_per_rejected,
@@ -677,7 +706,9 @@ def format_reward_pairs(
         if budget is None:
             template_target = template_capacity.copy()
         else:
-            template_target = _allocate_target_by_ratios(budget, REWARD_PAIR_TEMPLATES, template_ratios)
+            template_target = _allocate_target_by_ratios(
+                budget, REWARD_PAIR_TEMPLATES, template_ratios
+            )
             for tpl in template_target:
                 template_target[tpl] = min(template_target[tpl], template_capacity[tpl])
 
@@ -687,18 +718,19 @@ def format_reward_pairs(
         template_pair_sets: dict[tuple[int, int], set[tuple[str, str]]] = {
             tpl: set() for tpl in REWARD_PAIR_TEMPLATES
         }
-        template_deficit: dict[tuple[int, int], int] = {tpl: 0 for tpl in REWARD_PAIR_TEMPLATES}
+        template_deficit: dict[tuple[int, int], int] = {
+            tpl: 0 for tpl in REWARD_PAIR_TEMPLATES
+        }
 
         for tpl in REWARD_PAIR_TEMPLATES:
-            hi, lo = tpl
-            chosen_pool = bucket_texts.get(hi, [])
-            rejected_pool = bucket_texts.get(lo, [])
+            high_bucket, low_bucket = tpl
+            chosen_pool = bucket_texts.get(high_bucket, [])
+            rejected_pool = bucket_texts.get(low_bucket, [])
             target_count = template_target.get(tpl, 0)
             if target_count <= 0 or not chosen_pool or not rejected_pool:
                 template_deficit[tpl] = target_count
                 continue
 
-            # Compact very large pools to keep pair sampling tractable.
             chosen_needed = max(1, target_count // max(max_reuse_per_chosen, 1) + 2)
             rejected_needed = max(1, target_count // max(max_reuse_per_rejected, 1) + 2)
             chosen_limit = min(len(chosen_pool), chosen_needed * 3)
@@ -727,23 +759,25 @@ def format_reward_pairs(
             if REUSE_MONITOR_ENABLED:
                 chosen_counts: dict[str, int] = {}
                 rejected_counts: dict[str, int] = {}
-                for c_text, r_text in template_pairs[tpl]:
-                    chosen_counts[c_text] = chosen_counts.get(c_text, 0) + 1
-                    rejected_counts[r_text] = rejected_counts.get(r_text, 0) + 1
+                for chosen_text, rejected_text in template_pairs[tpl]:
+                    chosen_counts[chosen_text] = chosen_counts.get(chosen_text, 0) + 1
+                    rejected_counts[rejected_text] = rejected_counts.get(rejected_text, 0) + 1
                 chosen_stats = _summarize_reuse_counts(chosen_counts)
                 rejected_stats = _summarize_reuse_counts(rejected_counts)
                 reuse_monitor_records.append(
                     {
+                        "split": split_name,
                         "lang": lang,
                         "source": source_name,
-                        "template": f"Q{hi}>Q{lo}",
+                        "template": f"Q{high_bucket}>Q{low_bucket}",
                         "chosen": chosen_stats,
                         "rejected": rejected_stats,
                     }
                 )
                 print(
-                    f"  [reward][{lang}][Q{hi}>Q{lo}] target={target_count}, "
-                    f"actual={len(template_pairs[tpl])}, deficit={template_deficit[tpl]}"
+                    f"  [reward][{split_name}][{lang}][Q{high_bucket}>Q{low_bucket}] "
+                    f"target={target_count}, actual={len(template_pairs[tpl])}, "
+                    f"deficit={template_deficit[tpl]}"
                 )
                 print(
                     f"    chosen_reuse p95={chosen_stats['p95']} p99={chosen_stats['p99']} "
@@ -762,16 +796,17 @@ def format_reward_pairs(
                 elif rejected_stats["p95"] > max_reuse_per_rejected * REUSE_WARN_RATIO:
                     print("    [WARN] rejected reuse p95 near cap")
 
-        # Phase 3: in-language redistribution after resampling
         if budget is not None:
             generated = sum(len(template_pairs[tpl]) for tpl in REWARD_PAIR_TEMPLATES)
             shortage = max(0, budget - generated)
             if shortage > 0:
-                extra_targets = _allocate_target_by_ratios(shortage, REWARD_PAIR_TEMPLATES, template_ratios)
+                extra_targets = _allocate_target_by_ratios(
+                    shortage, REWARD_PAIR_TEMPLATES, template_ratios
+                )
                 for tpl in REWARD_PAIR_TEMPLATES:
-                    hi, lo = tpl
-                    chosen_pool = bucket_texts.get(hi, [])
-                    rejected_pool = bucket_texts.get(lo, [])
+                    high_bucket, low_bucket = tpl
+                    chosen_pool = bucket_texts.get(high_bucket, [])
+                    rejected_pool = bucket_texts.get(low_bucket, [])
                     extra_target = extra_targets.get(tpl, 0)
                     if extra_target <= 0 or not chosen_pool or not rejected_pool:
                         continue
@@ -799,9 +834,11 @@ def format_reward_pairs(
                             template_pairs[tpl].append(pair)
                     added = len(template_pairs[tpl]) - before
                     if added > 0:
-                        print(f"  [reward][{lang}][Q{hi}>Q{lo}] redistribution added {added} pairs")
+                        print(
+                            f"  [reward][{split_name}][{lang}][Q{high_bucket}>Q{low_bucket}] "
+                            f"redistribution added {added} pairs"
+                        )
 
-        # Flatten template pairs into language pairs
         source_generated = 0
         for tpl in REWARD_PAIR_TEMPLATES:
             for chosen_text, rejected_text in template_pairs[tpl]:
@@ -810,19 +847,188 @@ def format_reward_pairs(
                 lang_pairs[lang]["chosen"].append([{"role": "assistant", "content": chosen_text}])
                 lang_pairs[lang]["rejected"].append([{"role": "assistant", "content": rejected_text}])
                 source_generated += 1
-        print(f"  [reward] {source_name} ({lang}): generated {source_generated} score-based pairs")
+        print(
+            f"  [reward][{split_name}] {source_name} ({lang}): "
+            f"generated {source_generated} score-based pairs"
+        )
 
-    # Apply per-language score_based cap from allocation config
-    for lang, pairs in lang_pairs.items():
-        n_raw = len(pairs["prompt"])
-        cap = allocation.get(lang, {}).get("score_based")
-        if cap is not None and n_raw > cap:
-            indices = list(range(n_raw))
-            rng.shuffle(indices)
-            selected = sorted(indices[:cap])
+    return lang_pairs, reuse_monitor_records
+
+
+def _load_synthesized_pairs_by_split(
+    synthesized_reward_dir: str | Path | None,
+    allocation: dict[str, dict[str, int | None]],
+    text_to_split: dict[str, str],
+    val_ratio: float,
+    seed: int,
+) -> tuple[dict[str, dict[str, dict[str, list]]], dict[str, dict[str, int]]]:
+    """Load synthesized pairs and assign them to train/validation deterministically."""
+    split_synth_pairs = {
+        "train": {
+            lang: {"prompt": [], "chosen": [], "rejected": []}
+            for lang in ["en", "zh", "es"]
+        },
+        "validation": {
+            lang: {"prompt": [], "chosen": [], "rejected": []}
+            for lang in ["en", "zh", "es"]
+        },
+    }
+    synth_counts = {
+        "train": {"en": 0, "zh": 0, "es": 0},
+        "validation": {"en": 0, "zh": 0, "es": 0},
+    }
+    if synthesized_reward_dir is None:
+        return split_synth_pairs, synth_counts
+
+    synth_dir = Path(synthesized_reward_dir)
+    if not synth_dir.exists():
+        print(f"  [reward] Synthesized dir {synth_dir} does not exist, skipping")
+        return split_synth_pairs, synth_counts
+
+    rng = random.Random(seed + 97)
+    fallback_text_to_split: dict[str, str] = {}
+
+    for lang in ["en", "zh", "es"]:
+        synth_file = synth_dir / f"reward_neg_{lang}.jsonl"
+        if not synth_file.exists():
+            continue
+
+        records = []
+        with open(synth_file, encoding="utf-8") as file_obj:
+            for line in file_obj:
+                line = line.strip()
+                if not line:
+                    continue
+                records.append(json.loads(line))
+
+        synth_cap_cfg = allocation.get(lang, {}).get("synthesized")
+        final_cap = synth_cap_cfg if synth_cap_cfg is not None else len(records)
+        final_cap = max(0, final_cap)
+        if len(records) > final_cap:
+            rng.shuffle(records)
+            records = records[:final_cap]
+
+        for record in records:
+            chosen_messages = record.get("chosen") or []
+            chosen_text = chosen_messages[0].get("content", "") if chosen_messages else ""
+            normalized_text = _normalize_reward_text(chosen_text)
+            split_name = text_to_split.get(normalized_text)
+            if split_name is None:
+                if normalized_text not in fallback_text_to_split:
+                    assign_to_validation = rng.random() < val_ratio and val_ratio > 0.0
+                    fallback_text_to_split[normalized_text] = (
+                        "validation" if assign_to_validation else "train"
+                    )
+                split_name = fallback_text_to_split[normalized_text]
+
             for key in ("prompt", "chosen", "rejected"):
-                pairs[key] = [pairs[key][i] for i in selected]
-            print(f"  [reward] Downsampled {lang} score-based: {n_raw} -> {cap}")
+                split_synth_pairs[split_name][lang][key].append(record[key])
+            synth_counts[split_name][lang] += 1
+
+        print(
+            f"  [reward] Loaded {len(records)} synthesized pairs for {lang} "
+            f"(cfg_cap={synth_cap_cfg}) from {synth_file.name}"
+        )
+
+    return split_synth_pairs, synth_counts
+
+
+def format_reward_pairs(
+    unified_datasets: dict[str, datasets.Dataset],
+    high_quantile: float = 0.7,
+    low_quantile: float = 0.3,
+    max_pairs_per_chosen: int = 3,
+    allocation: dict[str, dict[str, int | None]] | None = None,
+    synthesized_reward_dir: str | Path | None = None,
+    val_ratio: float = 0.1,
+    seed: int = 42,
+) -> datasets.DatasetDict:
+    """Construct Reward Model preference pairs from Unified Intermediate Format data.
+
+    Processing Flow:
+        1. Split original texts into train/validation before any pair construction
+        2. Generate score-based pairs independently inside each split
+        3. Load synthesized hard-negative pairs and route them into the same split space
+        4. Merge all languages within each split and return train/validation datasets
+
+    Args:
+        unified_datasets: Dictionary of Unified Intermediate Format datasets output by parser.
+            Only uses sources with scores (rjokes, haha, chinese_humor),
+            Automatically skips sources with score=None (cfun) and non-unified format (semeval).
+
+        high_quantile: Minimum percentile for high score group. Default 0.7 (Top 30% are chosen).
+        low_quantile: Maximum percentile for low score group. Default 0.3 (Bottom 30% are rejected).
+        max_pairs_per_chosen: Max number of pairs per chosen sample.
+            Prevents reusing the same good joke too many times. Default 3.
+        allocation: Per-language allocation config.  Each language maps to
+            {"score_based": int|None, "synthesized": int|None} where None means
+            "use all available".  Defaults to REWARD_PAIR_ALLOCATION module constant.
+        synthesized_reward_dir: Directory containing synthesized hard-negative preference
+            pair files (reward_neg_en.jsonl, reward_neg_zh.jsonl, reward_neg_es.jsonl).
+            If set and directory exists, these files are loaded and merged into the
+            preference pairs. None means no synthesized data is loaded.
+        val_ratio: Validation set ratio applied at the original-text level. Default 0.1.
+        seed: Random seed.
+
+    Returns:
+        datasets.DatasetDict: Contains "train" and "validation" splits
+            Schema for each split:
+            - prompt (list[dict]):   [{"role": "user", "content": "..."}]
+            - chosen (list[dict]):   [{"role": "assistant", "content": "High score joke"}]
+            - rejected (list[dict]): [{"role": "assistant", "content": "Low score joke"}]
+    """
+    if allocation is None:
+        allocation = REWARD_PAIR_ALLOCATION
+    split_sources, text_to_split = _split_reward_source_datasets(
+        unified_datasets=unified_datasets,
+        val_ratio=val_ratio,
+        seed=seed,
+    )
+
+    scored_sources = ["rjokes", "haha", "chinese_humor"]
+    source_lang = {"rjokes": "en", "haha": "es", "chinese_humor": "zh"}
+    active_sources = [source for source in scored_sources if source in unified_datasets]
+
+    source_budget_total: dict[str, int | None] = {}
+    for lang in ["en", "es", "zh"]:
+        sources = [source for source in active_sources if source_lang[source] == lang]
+        cap = allocation.get(lang, {}).get("score_based")
+        if cap is None or not sources:
+            for source_name in sources:
+                source_budget_total[source_name] = None
+            continue
+        base = cap // len(sources)
+        remainder = cap % len(sources)
+        for idx, source_name in enumerate(sorted(sources)):
+            source_budget_total[source_name] = base + (1 if idx < remainder else 0)
+
+    split_source_budget: dict[str, dict[str, int | None]] = {
+        "train": {},
+        "validation": {},
+    }
+    for source_name in active_sources:
+        train_weight = len(split_sources["train"][source_name])
+        validation_weight = len(split_sources["validation"][source_name])
+        train_budget, validation_budget = _split_budget_by_weights(
+            source_budget_total.get(source_name),
+            train_weight=train_weight,
+            validation_weight=validation_weight,
+        )
+        split_source_budget["train"][source_name] = train_budget
+        split_source_budget["validation"][source_name] = validation_budget
+
+    split_score_pairs: dict[str, dict[str, dict[str, list]]] = {}
+    reuse_monitor_records: list[dict] = []
+    for split_name in ("train", "validation"):
+        score_pairs, split_reuse_records = _build_score_based_pairs_for_split(
+            split_name=split_name,
+            split_sources=split_sources[split_name],
+            source_budget=split_source_budget[split_name],
+            max_pairs_per_chosen=max_pairs_per_chosen,
+            seed=seed + (0 if split_name == "train" else 1_000),
+        )
+        split_score_pairs[split_name] = score_pairs
+        reuse_monitor_records.extend(split_reuse_records)
 
     # Optionally export reuse stats
     if REUSE_MONITOR_ENABLED and REUSE_STATS_EXPORT_PATH:
@@ -833,78 +1039,42 @@ def format_reward_pairs(
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
         print(f"  [reward] Reuse stats exported: {export_path}")
 
-    # Load synthesized hard-negative pairs, apply per-language synthesized cap
-    synth_counts: dict[str, int] = {"en": 0, "zh": 0, "es": 0}
-    synth_pairs: dict[str, dict[str, list]] = {
-        lang: {"prompt": [], "chosen": [], "rejected": []}
-        for lang in ["en", "zh", "es"]
-    }
+    split_synth_pairs, synth_counts = _load_synthesized_pairs_by_split(
+        synthesized_reward_dir=synthesized_reward_dir,
+        allocation=allocation,
+        text_to_split=text_to_split,
+        val_ratio=val_ratio,
+        seed=seed,
+    )
 
-    if synthesized_reward_dir is not None:
-        synth_dir = Path(synthesized_reward_dir)
-        if synth_dir.exists():
-            for lang in ["en", "zh", "es"]:
-                synth_file = synth_dir / f"reward_neg_{lang}.jsonl"
-                if not synth_file.exists():
-                    continue
-                records = []
-                with open(synth_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        records.append(json.loads(line))
+    result_dict: dict[str, datasets.Dataset] = {}
+    for split_name in ("train", "validation"):
+        all_pairs: dict[str, list] = {"prompt": [], "chosen": [], "rejected": []}
 
-                synth_cap_cfg = allocation.get(lang, {}).get("synthesized")
-                final_cap = synth_cap_cfg if synth_cap_cfg is not None else len(records)
-                final_cap = max(0, final_cap)
+        print()
+        print(f"  [reward] Split summary: {split_name}")
+        print(f"  {'lang':<6} {'score_based':>12} {'synthesized':>12} {'total':>8}")
+        print(f"  {'-'*6} {'-'*12} {'-'*12} {'-'*8}")
 
-                if len(records) > final_cap:
-                    rng.shuffle(records)
-                    records = records[:final_cap]
+        for lang in ["en", "zh", "es"]:
+            n_score = len(split_score_pairs[split_name][lang]["prompt"])
+            n_synth = synth_counts[split_name][lang]
 
-                for record in records:
-                    synth_pairs[lang]["prompt"].append(record["prompt"])
-                    synth_pairs[lang]["chosen"].append(record["chosen"])
-                    synth_pairs[lang]["rejected"].append(record["rejected"])
+            for key in ("prompt", "chosen", "rejected"):
+                all_pairs[key].extend(split_score_pairs[split_name][lang][key])
+                all_pairs[key].extend(split_synth_pairs[split_name][lang][key])
 
-                synth_counts[lang] = len(records)
-                print(
-                    f"  [reward] Loaded {len(records)} synthesized pairs for {lang} "
-                    f"(cfg_cap={synth_cap_cfg}) from {synth_file.name}"
-                )
-        else:
-            print(f"  [reward] Synthesized dir {synth_dir} does not exist, skipping")
+            total = n_score + n_synth
+            print(f"  {lang:<6} {n_score:>12,} {n_synth:>12,} {total:>8,}")
 
-    # Merge score-based + synthesized, print composition summary
-    all_pairs: dict[str, list] = {"prompt": [], "chosen": [], "rejected": []}
+        total_all = len(all_pairs["prompt"])
+        print(f"  {'total':<6} {'':<12} {'':<12} {total_all:>8,}")
 
-    print()
-    print(f"  {'lang':<6} {'score_based':>12} {'synthesized':>12} {'total':>8}")
-    print(f"  {'-'*6} {'-'*12} {'-'*12} {'-'*8}")
+        result_dict[split_name] = datasets.Dataset.from_dict(all_pairs)
 
-    for lang in ["en", "zh", "es"]:
-        n_score = len(lang_pairs[lang]["prompt"])
-        n_synth = synth_counts[lang]
-
-        for key in ("prompt", "chosen", "rejected"):
-            all_pairs[key].extend(lang_pairs[lang][key])
-            all_pairs[key].extend(synth_pairs[lang][key])
-
-        total = n_score + n_synth
-        print(f"  {lang:<6} {n_score:>12,} {n_synth:>12,} {total:>8,}")
-
-    total_all = len(all_pairs["prompt"])
-    print(f"  {'total':<6} {'':<12} {'':<12} {total_all:>8,}")
-
-    if not all_pairs["prompt"]:
+    if len(result_dict["train"]) == 0 and len(result_dict["validation"]) == 0:
         raise ValueError("Failed to generate any preference pairs, please check data and parameters")
 
-    pairs_ds = datasets.Dataset.from_dict(all_pairs)
-    split = pairs_ds.train_test_split(test_size=val_ratio, seed=seed)
-    result = datasets.DatasetDict({
-        "train": split["train"],
-        "validation": split["test"],
-    })
+    result = datasets.DatasetDict(result_dict)
     print(f"  [reward] Final: train={len(result['train'])}, validation={len(result['validation'])}")
     return result
