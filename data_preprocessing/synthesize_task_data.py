@@ -6,6 +6,10 @@ This script is independent of pipeline.py and is used to synthesize
 SFT Type B data (task-formatted training samples).
 
 Supported workflow:
+    build_keyword_pool:
+      Collect wordfreq candidates -> spaCy POS filter -> SemEval leakage filter
+      -> save data/cache/keyword_pools/{lang}.json
+
     run:
       Build prompts -> call realtime Gemini (multi-task JSON) -> quality filter
       -> save type_b_{lang}.jsonl
@@ -13,11 +17,14 @@ Supported workflow:
 Important Design Principles:
     - Do not use SemEval-provided headline/keyword pairs (prevent leakage)
     - Headlines come from external Babel Briefings dataset
-    - Keyword pairs are generated from local language-specific keyword pools
+    - Keyword pairs are generated from cached language-specific keyword pool files
     - Final SFT Type B data is written to data/synthesized/type_b_{lang}.jsonl
     - pipeline.py format_sft stage automatically loads type_b_*.jsonl
 
 Usage:
+    # Build English keyword pool
+    python -m data_preprocessing.synthesize_task_data --lang en --build_keyword_pool_only
+
     # Synthesize English data
     python -m data_preprocessing.synthesize_task_data --lang en
 
@@ -31,17 +38,23 @@ Dependencies:
     - google-genai (Google Gemini API)
     - prompt_templates (Local)
     - datasets (HuggingFace, for loading Babel Briefings)
+    - wordfreq (For high-frequency keyword candidates)
+    - spaCy (For POS-based noun filtering)
 
 Environment Variables:
     - GEMINI_API_KEY: Google Gemini API Key (Must be set)
 """
 
 import argparse
+import csv
 import itertools
 import json
 import os
 import random
+import re
 import time
+import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
 from data_preprocessing.prompt_templates import (
@@ -54,129 +67,275 @@ from data_preprocessing.prompt_templates import (
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SYNTHESIZED_DIR = PROJECT_ROOT / "data" / "synthesized"
-
-
-# ============================================================
-# Keyword Vocabulary (For keyword subtask)
-# ============================================================
-# Principles for selecting these word pairs:
-#   - Do not overlap with keywords provided by SemEval
-#   - Cover various POS and semantic categories (animals, objects, actions, food, etc.)
-#   - Create "incongruity" when paired, helping humor effect
-#
-# Maintain an independent vocabulary for each language.
-# The synthesis flow for keyword subtask will randomly pick two words to pair from here.
-
-KEYWORD_POOL_EN = [
-    "astronaut", "cactus", "piano", "tornado", "kangaroo",
-    "umbrella", "volcano", "noodle", "submarine", "giraffe",
-    "avalanche", "toaster", "jellyfish", "telescope", "pretzel",
-    "dinosaur", "trampoline", "mushroom", "lighthouse", "accordion",
-    "parrot", "tuxedo", "glacier", "chopstick", "saxophone",
-    "elevator", "flamingo", "suitcase", "comet", "waffle",
-    "lantern", "backpack", "igloo", "fountain", "zeppelin",
-    "crystal", "marshmallow", "octopus", "microscope", "violin",
-    "pyramid", "carousel", "otter", "galaxy", "windmill",
-    "cinnamon", "meadow", "satellite", "pancake", "tunnel",
-    "pebble", "seahorse", "origami", "skateboard", "nectar",
-    "volleyball", "harpoon", "beehive", "moonlight", "campfire",
-    "hourglass", "bamboo", "cupcake", "canyon", "firework",
-    "whistle", "compass", "raincoat", "snowflake", "reef",
-    "coconut", "meerkat", "drumstick", "stardust", "museum",
-    "kayak", "robot", "fossil", "carnation", "pinwheel",
-    "donut", "meteor", "chessboard", "waistcoat", "ginger",
-    "castle", "seashell", "pillow", "chimney", "trombone",
-    "hedgehog", "pagoda", "puddle", "firefly", "bathtub",
-    "thunder", "almond", "goblet", "orchid", "waterfall",
-    "harbor", "sunbeam", "clocktower", "strawberry", "walrus",
-    "teapot", "scooter", "anvil", "plankton", "hammock",
-    "popsicle", "bison", "sandcastle", "dice", "quartz",
-    "lizard", "rainbow", "trumpet", "cherry", "scooterbag",
-    "snowman", "raccoon", "blueberry", "gingerbread", "hamster",
-    "tortoise", "paperclip", "megaphone", "lilypad", "cliff",
-    "sunflower", "mapcase", "starfish", "ukulele", "parachute",
-    "millstone", "jigsaw", "helmet", "sapphire", "cabin",
-    "peppermint", "locomotive", "tangerine", "monsoon", "riverbank",
-    "binoculars", "moth", "catapult", "breadstick", "planetarium",
-    "cobblestone", "windchime", "mooncake", "slingshot", "strawhat",
-]
-
-KEYWORD_POOL_ZH = [
-    "宇航员", "仙人掌", "钢琴", "龙卷风", "袋鼠",
-    "雨伞", "火山", "面条", "潜水艇", "长颈鹿",
-    "雪崩", "烤面包机", "水母", "望远镜", "恐龙",
-    "蹦床", "蘑菇", "灯塔", "手风琴", "鹦鹉",
-    "冰川", "筷子", "萨克斯", "电梯", "火烈鸟",
-    "行李箱", "彗星", "华夫饼", "拖拉机", "企鹅",
-    "灯笼", "背包", "喷泉", "飞船", "水晶",
-    "软糖", "章鱼", "显微镜", "小提琴", "金字塔",
-    "旋转木马", "水獭", "银河", "风车", "肉桂",
-    "草地", "卫星", "煎饼", "隧道", "鹅卵石",
-    "海马", "折纸", "滑板", "树汁", "排球",
-    "鱼叉", "蜂巢", "月光", "篝火", "沙漏",
-    "竹子", "纸杯蛋糕", "峡谷", "焰火", "口哨",
-    "指南针", "雨衣", "雪晶", "珊瑚礁", "椰子",
-    "狐獴", "鼓槌", "星尘", "博物馆", "皮划艇",
-    "机器人", "化石", "康乃馨", "风车玩具", "甜甜圈",
-    "流星", "棋盘", "马甲", "姜饼", "城堡",
-    "贝壳", "枕头", "烟囱", "长号", "刺猬",
-    "宝塔", "水洼", "萤火虫", "浴缸", "雷声",
-    "杏仁", "高脚杯", "铃兰", "瀑布", "港口",
-    "钟楼", "草莓", "海象", "茶壶", "滑板车",
-    "铁砧", "浮游生物", "吊床", "冰棍", "野牛",
-    "沙堡", "骰子", "石英", "蜥蜴", "彩虹",
-    "小号", "樱桃", "雪人", "浣熊", "蓝莓",
-    "仓鼠", "乌龟", "回形针", "扩音器", "睡莲",
-    "悬崖", "向日葵", "海星", "尤克里里", "降落伞",
-    "磨盘", "拼图", "头盔", "蓝宝石", "木屋",
-    "薄荷糖", "火车头", "橘子", "季风", "河岸",
-    "双筒望远镜", "飞蛾", "投石机", "面包棒", "天文馆",
-    "鹅卵路", "风铃", "月饼", "弹弓", "草帽",
-]
-
-KEYWORD_POOL_ES = [
-    "astronauta", "cactus", "piano", "tornado", "canguro",
-    "paraguas", "volcán", "fideos", "submarino", "jirafa",
-    "avalancha", "tostadora", "medusa", "telescopio", "pretzel",
-    "dinosaurio", "trampolín", "hongo", "faro", "acordeón",
-    "loro", "esmoquin", "glaciar", "palillos", "saxofón",
-    "ascensor", "flamenco", "maleta", "cometa", "gofre",
-    "linterna", "mochila", "iglú", "fuente", "zepelín",
-    "cristal", "caramelo", "pulpo", "microscopio", "violín",
-    "pirámide", "carrusel", "nutria", "galaxia", "molino",
-    "canela", "pradera", "satélite", "panqueque", "túnel",
-    "guijarro", "caballito", "origami", "patineta", "néctar",
-    "voleibol", "arpón", "colmena", "luzlunar", "fogata",
-    "relojarena", "bambú", "magdalena", "cañón", "fuegos",
-    "silbato", "brújula", "impermeable", "copo", "arrecife",
-    "coco", "suricata", "baqueta", "polvoestelar", "museo",
-    "kayak", "robot", "fósil", "clavel", "molinillo",
-    "dónut", "meteoro", "tablero", "chaleco", "jengibre",
-    "castillo", "concha", "almohada", "chimenea", "trombón",
-    "erizo", "pagoda", "charco", "luciérnaga", "bañera",
-    "trueno", "almendra", "cáliz", "orquídea", "cascada",
-    "puerto", "torreloj", "fresa", "morsa", "tetera",
-    "patinete", "yunque", "plancton", "hamaca", "paleta",
-    "bisonte", "castilloarena", "dado", "cuarzo", "lagarto",
-    "arcoíris", "trompeta", "cereza", "muñeco", "mapache",
-    "arándano", "hámster", "tortuga", "clip", "megáfono",
-    "nenúfar", "acantilado", "girasol", "estrellamar", "ukelele",
-    "paracaídas", "piedramolino", "rompecabezas", "casco", "zafiro",
-    "cabaña", "menta", "locomotora", "mandarina", "monzón",
-    "ribera", "binoculares", "polilla", "catapulta", "grisín",
-    "planetario", "adoquín", "campanaviento", "pastelluna", "tirachinas",
-]
-
-_KEYWORD_POOLS = {
-    "en": KEYWORD_POOL_EN,
-    "zh": KEYWORD_POOL_ZH,
-    "es": KEYWORD_POOL_ES,
+DATA_DIR = PROJECT_ROOT / "data"
+SYNTHESIZED_DIR = DATA_DIR / "synthesized"
+KEYWORD_POOL_CACHE_DIR = DATA_DIR / "cache" / "keyword_pools"
+SEMEVAL_TASK_FILES = {
+    "en": DATA_DIR / "raw" / "semeval_task" / "task-a-en.tsv",
+    "zh": DATA_DIR / "raw" / "semeval_task" / "task-a-zh.tsv",
+    "es": DATA_DIR / "raw" / "semeval_task" / "task-a-es.tsv",
 }
+SPACY_MODEL_NAMES = {
+    "en": "en_core_web_sm",
+    "zh": "zh_core_web_sm",
+    "es": "es_core_news_sm",
+}
+KEYWORD_ALLOWED_POS = {
+    "en": {"NOUN", "PROPN"},
+    "zh": {"NOUN", "PROPN"},
+    "es": {"NOUN", "PROPN"},
+}
+DEFAULT_KEYWORD_POOL_SIZE = 2000
+DEFAULT_KEYWORD_CANDIDATE_LIMIT = 20000
 
 # Realtime multi-call group size.
 # Keep this relatively small to avoid malformed/truncated JSON responses.
 REALTIME_MULTI_GROUP_SIZE = 100
+
+
+def _normalize_keyword(text: str, lang: str) -> str:
+    """Normalize keyword text for matching and caching."""
+    normalized = unicodedata.normalize("NFKC", text).strip()
+    if lang == "zh":
+        return "".join(normalized.split())
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.casefold()
+
+
+def _strip_accents(text: str) -> str:
+    """Remove accent marks while preserving base characters."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def _keyword_match_keys(word: str, lang: str) -> set[str]:
+    """Build normalized matching keys for leakage filtering."""
+    normalized = _normalize_keyword(word, lang)
+    if not normalized:
+        return set()
+    keys = {normalized}
+    if lang == "es":
+        keys.add(_strip_accents(normalized))
+    return {item for item in keys if item}
+
+
+def _keyword_pair_keys(word1: str, word2: str, lang: str) -> set[tuple[str, str]]:
+    """Build pair-level keys for SemEval leakage filtering."""
+    keys = set()
+    for left in _keyword_match_keys(word1, lang):
+        for right in _keyword_match_keys(word2, lang):
+            if left and right and left != right:
+                keys.add(tuple(sorted((left, right))))
+    return keys
+
+
+def _keyword_pool_path(lang: str, cache_dir: Path = KEYWORD_POOL_CACHE_DIR) -> Path:
+    """Return cache file path for a language-specific keyword pool."""
+    if lang not in SEMEVAL_TASK_FILES:
+        raise ValueError(f"Unsupported language code: '{lang}'")
+    return Path(cache_dir) / f"{lang}.json"
+
+
+def _load_semeval_keyword_constraints(lang: str) -> tuple[set[str], set[tuple[str, str]]]:
+    """Load SemEval keyword rows as blocked words and blocked pairs."""
+    if lang not in SEMEVAL_TASK_FILES:
+        raise ValueError(f"Unsupported language code: '{lang}'")
+
+    blocked_words: set[str] = set()
+    blocked_pairs: set[tuple[str, str]] = set()
+    semeval_path = SEMEVAL_TASK_FILES[lang]
+    with open(semeval_path, "r", encoding="utf-8", newline="") as file_obj:
+        reader = csv.DictReader(file_obj, delimiter="\t")
+        for row in reader:
+            word1 = (row.get("word1") or "").strip()
+            word2 = (row.get("word2") or "").strip()
+            headline = (row.get("headline") or "").strip()
+            if headline != "-" or word1 == "-" or word2 == "-":
+                continue
+
+            blocked_words.update(_keyword_match_keys(word1, lang))
+            blocked_words.update(_keyword_match_keys(word2, lang))
+            blocked_pairs.update(_keyword_pair_keys(word1, word2, lang))
+    return blocked_words, blocked_pairs
+
+
+def _write_keyword_pool_cache(
+    lang: str,
+    keywords: list[str],
+    target_size: int,
+    blocked_words_count: int,
+    cache_dir: Path = KEYWORD_POOL_CACHE_DIR,
+) -> Path:
+    """Write keyword pool cache to JSON."""
+    output_path = _keyword_pool_path(lang, cache_dir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "lang": lang,
+        "target_size": target_size,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "blocked_words_count": blocked_words_count,
+        "keywords": keywords,
+    }
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _load_keyword_pool(
+    lang: str,
+    cache_dir: Path = KEYWORD_POOL_CACHE_DIR,
+    min_size: int = 2,
+) -> list[str]:
+    """Load and validate keyword pool cache."""
+    pool_path = _keyword_pool_path(lang, cache_dir)
+    if not pool_path.exists():
+        raise FileNotFoundError(
+            f"Keyword pool cache not found for '{lang}': {pool_path}. "
+            "Please build the keyword pool first."
+        )
+
+    payload = json.loads(pool_path.read_text(encoding="utf-8"))
+    keywords = payload.get("keywords")
+    if not isinstance(keywords, list):
+        raise ValueError(f"Invalid keyword pool format in {pool_path}: 'keywords' must be a list.")
+
+    cleaned_keywords: list[str] = []
+    seen_keywords: set[str] = set()
+    for item in keywords:
+        if not isinstance(item, str):
+            raise ValueError(f"Invalid keyword pool format in {pool_path}: keyword must be a string.")
+        normalized = _normalize_keyword(item, lang)
+        if not normalized:
+            raise ValueError(f"Invalid keyword pool format in {pool_path}: empty keyword is not allowed.")
+        if normalized in seen_keywords:
+            raise ValueError(f"Invalid keyword pool format in {pool_path}: duplicate keyword '{normalized}'.")
+        seen_keywords.add(normalized)
+        cleaned_keywords.append(normalized)
+
+    if len(cleaned_keywords) < min_size:
+        raise ValueError(
+            f"Keyword pool for '{lang}' has only {len(cleaned_keywords)} entries, "
+            f"but at least {min_size} are required."
+        )
+    return cleaned_keywords
+
+
+def _collect_wordfreq_candidates(lang: str, candidate_limit: int) -> list[str]:
+    """Collect high-frequency candidates from wordfreq."""
+    from wordfreq import top_n_list  # pyright: ignore[reportMissingImports]
+
+    return top_n_list(lang, candidate_limit, wordlist="best")
+
+
+def _load_spacy_pipeline(lang: str):
+    """Load language-specific spaCy pipeline for POS filtering."""
+    import spacy  # pyright: ignore[reportMissingImports]
+
+    if lang not in SPACY_MODEL_NAMES:
+        raise ValueError(f"Unsupported language code: '{lang}'")
+
+    model_name = SPACY_MODEL_NAMES[lang]
+    try:
+        return spacy.load(model_name, disable=["parser", "ner", "lemmatizer"])
+    except OSError as error:
+        raise RuntimeError(
+            f"spaCy model '{model_name}' is not installed. "
+            f"Please run: python -m spacy download {model_name}"
+        ) from error
+
+
+def _is_valid_keyword_surface(word: str, lang: str) -> bool:
+    """Apply lightweight language-specific surface filters before POS tagging."""
+    normalized = _normalize_keyword(word, lang)
+    if not normalized:
+        return False
+
+    if lang in {"en", "es"}:
+        if " " in normalized or len(normalized) < 2 or len(normalized) > 24:
+            return False
+        return re.fullmatch(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", normalized, flags=re.UNICODE) is not None
+
+    if len(normalized) < 2 or len(normalized) > 8:
+        return False
+    return re.fullmatch(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized) is not None
+
+
+def _filter_keyword_candidates(
+    lang: str,
+    candidates: list[str],
+    blocked_words: set[str],
+    nlp,
+    target_size: int,
+) -> list[str]:
+    """Filter candidates by normalization, leakage, and POS."""
+    prefiltered: list[str] = []
+    seen_prefiltered: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_keyword(candidate, lang)
+        if not _is_valid_keyword_surface(normalized, lang):
+            continue
+        if any(match_key in blocked_words for match_key in _keyword_match_keys(normalized, lang)):
+            continue
+        if normalized in seen_prefiltered:
+            continue
+        seen_prefiltered.add(normalized)
+        prefiltered.append(normalized)
+
+    accepted: list[str] = []
+    accepted_set: set[str] = set()
+    for normalized, doc in zip(prefiltered, nlp.pipe(prefiltered, batch_size=128)):
+        if len(doc) != 1:
+            continue
+        token = doc[0]
+        if token.pos_ not in KEYWORD_ALLOWED_POS[lang]:
+            continue
+        if token.is_punct or token.like_num:
+            continue
+        if lang in {"en", "es"} and not token.is_alpha:
+            continue
+        if normalized in accepted_set:
+            continue
+        accepted.append(normalized)
+        accepted_set.add(normalized)
+        if len(accepted) >= target_size:
+            break
+    return accepted
+
+
+def build_keyword_pool(
+    lang: str,
+    target_size: int = DEFAULT_KEYWORD_POOL_SIZE,
+    cache_dir: Path = KEYWORD_POOL_CACHE_DIR,
+    candidate_limit: int | None = None,
+) -> Path:
+    """Build and cache a language-specific keyword pool."""
+    if target_size < 2:
+        raise ValueError("target_size must be at least 2.")
+
+    if candidate_limit is None:
+        candidate_limit = max(DEFAULT_KEYWORD_CANDIDATE_LIMIT, target_size * 20)
+
+    blocked_words, _blocked_pairs = _load_semeval_keyword_constraints(lang)
+    candidates = _collect_wordfreq_candidates(lang, candidate_limit)
+    nlp = _load_spacy_pipeline(lang)
+    keywords = _filter_keyword_candidates(
+        lang=lang,
+        candidates=candidates,
+        blocked_words=blocked_words,
+        nlp=nlp,
+        target_size=target_size,
+    )
+    if len(keywords) < target_size:
+        raise ValueError(
+            f"Only collected {len(keywords)} keywords for '{lang}', "
+            f"which is below target_size={target_size}. Increase candidate_limit or relax filters."
+        )
+    return _write_keyword_pool_cache(
+        lang=lang,
+        keywords=keywords,
+        target_size=target_size,
+        blocked_words_count=len(blocked_words),
+        cache_dir=cache_dir,
+    )
 
 
 # ============================================================
@@ -503,13 +662,15 @@ def _generate_keyword_pairs(lang: str, n_pairs: int, seed: int = 42) -> list[tup
     Returns:
         list[tuple[str, str]]: List of keyword pairs
     """
-    if lang not in _KEYWORD_POOLS:
-        raise ValueError(f"Unsupported language code: '{lang}'")
+    pool = _load_keyword_pool(lang, min_size=2)
+    _blocked_words, blocked_pairs = _load_semeval_keyword_constraints(lang)
 
-    pool = _KEYWORD_POOLS[lang]
-
-    # Generate all unique combinations of two
-    all_combos = list(itertools.combinations(pool, 2))
+    # Generate all unique combinations of two, excluding blocked SemEval pairs.
+    all_combos = [
+        (word1, word2)
+        for word1, word2 in itertools.combinations(pool, 2)
+        if _keyword_pair_keys(word1, word2, lang).isdisjoint(blocked_pairs)
+    ]
 
     if n_pairs > len(all_combos):
         print(
@@ -784,10 +945,45 @@ def main():
         default=42,
         help="Random seed (default 42)",
     )
+    parser.add_argument(
+        "--build_keyword_pool_only",
+        action="store_true",
+        help="Only build keyword pool cache file(s) and skip Gemini synthesis",
+    )
+    parser.add_argument(
+        "--keyword_pool_size",
+        type=int,
+        default=DEFAULT_KEYWORD_POOL_SIZE,
+        help=f"Target keyword pool size per language (default {DEFAULT_KEYWORD_POOL_SIZE})",
+    )
+    parser.add_argument(
+        "--candidate_limit",
+        type=int,
+        default=None,
+        help="Optional upper bound for wordfreq candidate collection",
+    )
 
     args = parser.parse_args()
 
     languages = ["en", "zh", "es"] if args.lang == "all" else [args.lang]
+    if args.build_keyword_pool_only:
+        for lang in languages:
+            print(f"\n{'=' * 60}")
+            print(f"Building keyword pool: lang={lang}")
+            print(
+                f"  target_size: {args.keyword_pool_size}, "
+                f"candidate_limit: {args.candidate_limit or 'auto'}"
+            )
+            print(f"{'=' * 60}")
+            output_path = build_keyword_pool(
+                lang=lang,
+                target_size=args.keyword_pool_size,
+                candidate_limit=args.candidate_limit,
+            )
+            print(f"\nSaved keyword pool: {output_path}")
+        print("\nDone.")
+        return
+
     for lang in languages:
         print(f"\n{'=' * 60}")
         print(f"Synthesizing Type B data: lang={lang}")
