@@ -75,6 +75,7 @@ import os
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GRPO_PROMPTS_TRAIN_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts_train.jsonl"
+GRPO_PROMPTS_EVAL_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts_eval.jsonl"
 GRPO_PROMPTS_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts.jsonl"
 SFT_ADAPTER_DIR = PROJECT_ROOT / "checkpoints" / "sft" / "final"
 GRPO_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "grpo"
@@ -167,14 +168,17 @@ def load_sft_merged_model(
 # Dataset Loading
 # ============================================================
 
-def load_grpo_dataset(
-    prompts_file: str | Path | None = None,
-) -> Dataset:
-    """Load the GRPO training prompt dataset.
+def load_grpo_datasets(
+    train_file: str | Path | None = None,
+    eval_file: str | Path | None = None,
+) -> tuple[Dataset, Dataset | None]:
+    """Load GRPO prompt datasets for training and optional evaluation.
 
-    The GRPO dataset contains prompts only (no reference responses).
-    The model generates its own responses during training, which are
-    then scored by the reward function.
+    Preferred loading behavior:
+        1. If split files exist, load ``grpo_prompts_train.jsonl`` and
+           ``grpo_prompts_eval.jsonl``.
+        2. Otherwise fall back to the legacy ``grpo_prompts.jsonl`` and
+           disable evaluation.
 
     Expected JSONL format (one JSON object per line):
         {
@@ -192,55 +196,68 @@ def load_grpo_dataset(
         - keywords: List of required keywords (passed to the reward
             function via **kwargs).
 
+    The model generates its own responses during training/evaluation, which
+    are then scored by the reward function.
+
     Args:
-        prompts_file: Path to the GRPO prompts JSONL file. If None,
-            auto-detects: prefers grpo_prompts_train.jsonl (split mode),
-            falls back to grpo_prompts.jsonl (legacy full dataset).
+        train_file: Optional training split path. If None, auto-detects.
+        eval_file: Optional evaluation split path. If None, auto-detects.
 
     Returns:
-        datasets.Dataset: The training prompt dataset.
+        tuple[datasets.Dataset, datasets.Dataset | None]:
+            Training dataset and optional evaluation dataset.
 
     Raises:
-        FileNotFoundError: If prompts_file does not exist.
+        FileNotFoundError: If no usable GRPO prompt file exists.
     """
-    if prompts_file is None:
-        if GRPO_PROMPTS_TRAIN_FILE.exists():
-            prompts_file = GRPO_PROMPTS_TRAIN_FILE
-        else:
-            prompts_file = GRPO_PROMPTS_FILE
-    prompts_file = Path(prompts_file)
-    if not prompts_file.exists():
+    if train_file is None:
+        train_file = GRPO_PROMPTS_TRAIN_FILE if GRPO_PROMPTS_TRAIN_FILE.exists() else GRPO_PROMPTS_FILE
+    if eval_file is None and GRPO_PROMPTS_EVAL_FILE.exists():
+        eval_file = GRPO_PROMPTS_EVAL_FILE
+
+    train_file = Path(train_file)
+    eval_file = Path(eval_file) if eval_file is not None else None
+
+    if not train_file.exists():
         raise FileNotFoundError(
-            f"GRPO prompts file not found at {prompts_file}. "
+            f"GRPO prompts file not found at {train_file}. "
             f"Please run the data pipeline first: "
             f"python -m data_preprocessing.pipeline --stage all"
         )
 
-    dataset = load_dataset(
-        "json",
-        data_files=str(prompts_file),
-        split="train",
-    )
+    def _load_single_dataset(dataset_file: Path) -> Dataset:
+        dataset = load_dataset(
+            "json",
+            data_files=str(dataset_file),
+            split="train",
+        )
 
-    # Inject /no_think system message to disable Qwen3 thinking mode.
-    # This is more reliable than chat_template_kwargs={"enable_thinking": False},
-    # which may not be correctly propagated by GRPOTrainer in all TRL versions.
-    # The system message is prepended to each prompt's message list.
-    NO_THINK_SYSTEM_MSG = {"role": "system", "content": "/no_think"}
+        # Inject /no_think system message to disable Qwen3 thinking mode.
+        # This is more reliable than chat_template_kwargs={"enable_thinking": False},
+        # which may not be correctly propagated by GRPOTrainer in all TRL versions.
+        NO_THINK_SYSTEM_MSG = {"role": "system", "content": "/no_think"}
 
-    def _inject_no_think(example):
-        prompt_messages = example["prompt"]
-        if not prompt_messages or prompt_messages[0].get("role") != "system":
-            example["prompt"] = [NO_THINK_SYSTEM_MSG] + prompt_messages
-        return example
+        def _inject_no_think(example):
+            prompt_messages = example["prompt"]
+            if not prompt_messages or prompt_messages[0].get("role") != "system":
+                example["prompt"] = [NO_THINK_SYSTEM_MSG] + prompt_messages
+            return example
 
-    dataset = dataset.map(_inject_no_think)
+        return dataset.map(_inject_no_think)
 
-    print(f"Loaded GRPO dataset: {len(dataset)} prompts")
-    print(f"  Columns: {dataset.column_names}")
-    print(f"  /no_think system message injected into all prompts")
+    train_dataset = _load_single_dataset(train_file)
+    eval_dataset = _load_single_dataset(eval_file) if eval_file is not None and eval_file.exists() else None
 
-    return dataset
+    print(f"Loaded GRPO train dataset: {len(train_dataset)} prompts from {train_file.name}")
+    print(f"  Train columns: {train_dataset.column_names}")
+    if eval_dataset is not None:
+        print(f"Loaded GRPO eval dataset:  {len(eval_dataset)} prompts from {eval_file.name}")
+        print(f"  Eval columns: {eval_dataset.column_names}")
+    else:
+        print("Loaded GRPO eval dataset:  disabled (no eval split found)")
+    print("  /no_think system message injected into loaded prompts")
+
+    return train_dataset, eval_dataset
 
 
 # ============================================================
@@ -292,6 +309,7 @@ def build_grpo_lora_config(
 
 def build_grpo_config(
     tag: str,
+    has_eval_dataset: bool,
     num_generations: int = 16,
     max_completion_length: int = 256,
     batch_size: int = 8,
@@ -300,6 +318,7 @@ def build_grpo_config(
     num_epochs: int = 2,
     beta: float = 0.04,
     temperature: float = 0.9,
+    eval_steps: int = 50,
     report_to: str = "wandb",
 ) -> GRPOConfig:
     """Build the GRPOConfig with hyperparameters tuned for our task.
@@ -345,12 +364,14 @@ def build_grpo_config(
         num_epochs: Number of training epochs. Default 2.
         beta: KL divergence penalty coefficient. Default 0.04.
         temperature: Sampling temperature for generation. Default 0.9.
+        eval_steps: Run evaluation every N optimizer steps when eval data exists.
         report_to: Experiment tracking backend. Default "wandb".
 
     Returns:
         GRPOConfig: Training configuration for GRPOTrainer.
     """
     effective_batch = batch_size * grad_accum
+    save_steps = eval_steps if has_eval_dataset else 50
     print(f"  Effective prompt batch size: {batch_size} x {grad_accum} = {effective_batch}")
     print(f"  Completions per step: {batch_size} x {num_generations} = {batch_size * num_generations}")
 
@@ -385,9 +406,15 @@ def build_grpo_config(
 
         # --- Logging and Saving ---
         logging_steps=5,
+        eval_strategy="steps" if has_eval_dataset else "no",
+        eval_steps=eval_steps if has_eval_dataset else None,
+        per_device_eval_batch_size=batch_size,
         save_strategy="steps",
-        save_steps=50,
+        save_steps=save_steps,
         save_total_limit=5,
+        load_best_model_at_end=has_eval_dataset,
+        metric_for_best_model="eval_loss" if has_eval_dataset else None,
+        greater_is_better=False if has_eval_dataset else None,
         log_completions=True,
         num_completions_to_print=0,  # log to wandb Table, suppress terminal output
         report_to=report_to,
@@ -464,6 +491,10 @@ def main():
         help="Experiment tracking backend (default: wandb)",
     )
     parser.add_argument(
+        "--eval_steps", type=int, default=50,
+        help="Run GRPO evaluation every N steps when eval data exists (default: 50)",
+    )
+    parser.add_argument(
         "--use_humor_judge", action="store_true",
         help="Enable Phase 2a: use Gemini LLM-as-Judge for humor scoring. "
              "Requires GEMINI_API_KEY environment variable.",
@@ -507,7 +538,7 @@ def main():
     print("\n" + "=" * 60)
     print("Step 2: Load GRPO prompt dataset")
     print("=" * 60)
-    dataset = load_grpo_dataset()
+    train_dataset, eval_dataset = load_grpo_datasets()
 
     # ---- Step 3: Build LoRA Config for GRPO ----
     print("\n" + "=" * 60)
@@ -524,6 +555,7 @@ def main():
     print("=" * 60)
     grpo_config = build_grpo_config(
         tag=args.tag,
+        has_eval_dataset=eval_dataset is not None,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         batch_size=args.batch_size,
@@ -532,8 +564,13 @@ def main():
         num_epochs=args.num_epochs,
         beta=args.beta,
         temperature=args.temperature,
+        eval_steps=args.eval_steps,
         report_to=args.report_to
     )
+    if eval_dataset is not None:
+        print(f"  Evaluation enabled: every {args.eval_steps} steps on {len(eval_dataset)} prompts")
+    else:
+        print("  Evaluation disabled: no eval dataset loaded")
 
     # ---- Step 5: Build Reward Function ----
     print("\n" + "=" * 60)
@@ -563,7 +600,8 @@ def main():
         model=model,
         reward_funcs=reward_fn,
         args=grpo_config,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         processing_class=tokenizer,
         peft_config=grpo_lora_config,
     )
