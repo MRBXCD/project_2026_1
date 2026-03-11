@@ -33,7 +33,8 @@ from huggingface_hub import HfApi
 from peft import LoraConfig, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
-
+import os
+from datetime import datetime
 
 # ============================================================
 # 路径常量
@@ -42,6 +43,7 @@ from trl import SFTConfig, SFTTrainer
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SFT_DATA_DIR = PROJECT_ROOT / "data" / "sft"
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "sft"
+os.environ["WANDB_PROJECT"] = "proj_2026_1-sft"
 
 
 # ============================================================
@@ -217,9 +219,9 @@ def build_training_args(
         # --- 日志与保存 ---
         logging_steps=10,
         eval_strategy="steps",
-        eval_steps=200,
+        eval_steps=100,
         save_strategy="steps",
-        save_steps=200,
+        save_steps=100,
         save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -249,13 +251,13 @@ def main():
     parser = argparse.ArgumentParser(description="SFT 训练脚本")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-8B",
                         help="基座模型名称或路径")
-    parser.add_argument("--epochs", type=int, default=3,
+    parser.add_argument("--epochs", type=int, default=1,
                         help="训练轮数 (默认 3)")
     parser.add_argument("--batch_size", type=int, default=8,
                         help="每 GPU batch size (默认 16，H100 80GB 可支持)")
     parser.add_argument("--grad_accum", type=int, default=1,
                         help="梯度累积步数 (默认 1，batch_size 已经够大)")
-    parser.add_argument("--lr", type=float, default=2e-4,
+    parser.add_argument("--lr", type=float, default=1e-4,
                         help="学习率 (默认 2e-4)")
     parser.add_argument("--lora_rank", type=int, default=64,
                         help="LoRA 秩 (默认 64)")
@@ -264,7 +266,7 @@ def main():
     parser.add_argument("--report_to", type=str, default="wandb",
                         choices=["wandb", "tensorboard", "none"],
                         help="实验追踪工具 (默认 wandb)")
-    parser.add_argument("--run_name", type=str, default=None,
+    parser.add_argument("--run_name", type=str, default=f"sft_{normal}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                         help="Wandb run name and HF commit message tag (optional)")
     parser.add_argument(
         "--sft_repo", type=str, default="MRBSTUDIO/Humor-Qwen3-8B-SFT",
