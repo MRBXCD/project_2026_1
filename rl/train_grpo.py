@@ -54,6 +54,7 @@ Dependencies:
 """
 
 import argparse
+import math
 from pathlib import Path
 from datetime import datetime
 
@@ -66,7 +67,7 @@ from trl import GRPOConfig, GRPOTrainer
 
 from rl.humor_judge import build_batch_humor_scorer
 from rl.reward_model import build_batch_reward_model_scorer
-from rl.rewards import build_reward_fn
+from rl.rewards import RewardStatsRecorder, build_reward_fn
 import os
 
 # ============================================================
@@ -80,6 +81,37 @@ GRPO_PROMPTS_FILE = PROJECT_ROOT / "data" / "grpo" / "grpo_prompts.jsonl"
 SFT_ADAPTER_DIR = PROJECT_ROOT / "checkpoints" / "sft" / "final"
 GRPO_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "grpo"
 os.environ["WANDB_PROJECT"] = "proj_2026_1-grpo"
+
+
+class LoggingGRPOTrainer(GRPOTrainer):
+    """Attach custom reward component summaries to the regular trainer logs."""
+
+    def __init__(self, *args, reward_stats_recorder: RewardStatsRecorder | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reward_stats_recorder = reward_stats_recorder
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if self.reward_stats_recorder is not None:
+            mode = "train" if self.model.training else "eval"
+            self.reward_stats_recorder.set_mode(mode)
+        return super().compute_loss(
+            model,
+            inputs,
+            return_outputs=return_outputs,
+            num_items_in_batch=num_items_in_batch,
+        )
+
+    def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
+        if self.reward_stats_recorder is not None:
+            mode = "train" if self.model.training else "eval"
+            component_stats = self.reward_stats_recorder.pop_mean(mode)
+            if component_stats:
+                prefix = "train_components" if mode == "train" else "eval_components"
+                logs = {
+                    **logs,
+                    **{f"{prefix}/{key}": value for key, value in component_stats.items()},
+                }
+        super().log(logs, start_time)
 
 # ============================================================
 # Model Loading — Merge SFT Adapter into Base Model
@@ -372,14 +404,18 @@ def build_grpo_config(
     """
     effective_batch = batch_size * grad_accum
     save_steps = eval_steps if has_eval_dataset else 50
+    num_generations_eval = math.gcd(batch_size, num_generations) if has_eval_dataset else None
     print(f"  Effective prompt batch size: {batch_size} x {grad_accum} = {effective_batch}")
     print(f"  Completions per step: {batch_size} x {num_generations} = {batch_size * num_generations}")
+    if has_eval_dataset:
+        print(f"  Eval generations per prompt: {num_generations_eval}")
 
     return GRPOConfig(
         output_dir=str(GRPO_CHECKPOINT_DIR),
 
         # --- GRPO Core ---
         num_generations=num_generations,
+        num_generations_eval=num_generations_eval,
         max_completion_length=max_completion_length,
         temperature=temperature,
         top_p=0.95,
@@ -574,29 +610,36 @@ def main():
 
     # ---- Step 5: Build Reward Function ----
     print("\n" + "=" * 60)
+    reward_stats_recorder = RewardStatsRecorder()
     if args.use_reward_model:
         print("Step 5: Build reward function (Phase 2b: rules + reward model)")
         print("=" * 60)
         batch_scorer = build_batch_reward_model_scorer(args.reward_model_repo)
-        reward_fn = build_reward_fn(batch_humor_scorer=batch_scorer)
+        reward_fn = build_reward_fn(
+            batch_humor_scorer=batch_scorer,
+            stats_recorder=reward_stats_recorder,
+        )
         print("  Reward: format + keyword + relevance + humor (trained reward model)")
     elif args.use_humor_judge:
         print("Step 5: Build reward function (Phase 2a: rules + humor judge)")
         print("=" * 60)
         batch_scorer = build_batch_humor_scorer()
-        reward_fn = build_reward_fn(batch_humor_scorer=batch_scorer)
+        reward_fn = build_reward_fn(
+            batch_humor_scorer=batch_scorer,
+            stats_recorder=reward_stats_recorder,
+        )
         print("  Reward: format + keyword + relevance + humor (Gemini LLM-as-Judge)")
     else:
         print("Step 5: Build reward function (Phase 1: rule-based)")
         print("=" * 60)
-        reward_fn = build_reward_fn()
+        reward_fn = build_reward_fn(stats_recorder=reward_stats_recorder)
         print("  Reward: format + keyword + relevance (no humor scorer)")
 
     # ---- Step 6: Create GRPOTrainer ----
     print("\n" + "=" * 60)
     print("Step 6: Create GRPOTrainer")
     print("=" * 60)
-    trainer = GRPOTrainer(
+    trainer = LoggingGRPOTrainer(
         model=model,
         reward_funcs=reward_fn,
         args=grpo_config,
@@ -604,6 +647,7 @@ def main():
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
         peft_config=grpo_lora_config,
+        reward_stats_recorder=reward_stats_recorder,
     )
     print("  GRPOTrainer created successfully.")
 

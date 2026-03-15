@@ -7,6 +7,7 @@ import pytest
 from rl.rewards import (
     REWARD_EMPTY,
     REWARD_FORMAT_PASS,
+    RewardStatsRecorder,
     REWARD_TOO_LONG,
     REWARD_TOO_SHORT,
     REWARD_REPETITIVE,
@@ -19,6 +20,7 @@ from rl.rewards import (
     _extract_headline_tokens,
     build_reward_fn,
     compute_reward,
+    compute_reward_components,
     reward_format,
     reward_humor,
     reward_keyword,
@@ -232,6 +234,32 @@ class TestComputeReward:
         # Should include positive keyword and some relevance
         assert result > WEIGHT_FORMAT * REWARD_FORMAT_PASS
 
+    def test_components_weighted_total_matches_compute_reward(self):
+        kwargs = {
+            "prompt_text": "Write a joke about tech",
+            "response_text": "Tech giants now require penguin bankruptcy insurance.",
+            "keywords": ["penguin", "bankruptcy"],
+            "headline": "Tech Giants News",
+        }
+        components = compute_reward_components(**kwargs)
+        total = compute_reward(**kwargs)
+        assert components["weighted_total"] == pytest.approx(total)
+
+    def test_components_short_circuit_zeroes_other_terms(self):
+        components = compute_reward_components(
+            prompt_text="Tell a joke",
+            response_text="",
+            keywords=["penguin"],
+            headline="Big News",
+            humor_scorer=lambda p, r: 1.0,
+        )
+        assert components["weighted_total"] == REWARD_EMPTY
+        assert components["format"] == REWARD_EMPTY
+        assert components["keyword"] == 0.0
+        assert components["relevance"] == 0.0
+        assert components["humor"] == 0.0
+        assert components["short_circuit"] == 1.0
+
 
 # ============================================================
 # 6. build_reward_fn — batch tests
@@ -354,6 +382,21 @@ class TestBuildRewardFn:
                      keywords=[[] for _ in range(n)],
                      headline=[f"headline {i}" for i in range(n)])
         assert len(rewards) == n
+
+    def test_stats_recorder_collects_batch_means(self):
+        recorder = RewardStatsRecorder()
+        fn = build_reward_fn(stats_recorder=recorder)
+        prompts, completions, keywords, headline = self._make_batch(
+            ["A valid joke about something interesting here.", ""]
+        )
+        rewards = fn(prompts=prompts, completions=completions, keywords=keywords, headline=headline)
+        assert len(rewards) == 2
+
+        stats = recorder.pop_mean("train")
+        assert "format_mean" in stats
+        assert "weighted_total_mean" in stats
+        assert "short_circuit_rate" in stats
+        assert stats["short_circuit_rate"] == pytest.approx(0.5)
 
 
 # ============================================================

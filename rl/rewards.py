@@ -444,6 +444,96 @@ def reward_humor(
 # Composite Reward
 # ============================================================
 
+
+class RewardStatsRecorder:
+    """Collect batch-level reward component statistics for train/eval logging."""
+
+    def __init__(self) -> None:
+        self._current_mode = "train"
+        self._buffers: dict[str, list[dict[str, float]]] = {
+            "train": [],
+            "eval": [],
+        }
+
+    def set_mode(self, mode: str) -> None:
+        """Select which split receives future batch statistics."""
+        if mode not in self._buffers:
+            raise ValueError(f"Unsupported reward stats mode: {mode}")
+        self._current_mode = mode
+
+    def record(self, batch_stats: dict[str, float]) -> None:
+        """Append one batch summary to the active mode buffer."""
+        self._buffers[self._current_mode].append(batch_stats)
+
+    def pop_mean(self, mode: str) -> dict[str, float]:
+        """Average buffered batch summaries for a mode and clear the buffer."""
+        if mode not in self._buffers:
+            raise ValueError(f"Unsupported reward stats mode: {mode}")
+        entries = self._buffers[mode]
+        self._buffers[mode] = []
+        if not entries:
+            return {}
+
+        keys = entries[0].keys()
+        return {
+            key: sum(entry[key] for entry in entries) / len(entries)
+            for key in keys
+        }
+
+
+def compute_reward_components(
+    prompt_text: str,
+    response_text: str,
+    keywords: list[str] | None = None,
+    headline: str | None = None,
+    humor_scorer: Callable[[str, str], float] | None = None,
+    humor_score_override: float | None = None,
+    format_score_override: float | None = None,
+) -> dict[str, float]:
+    """Compute reward components and the exact weighted total for one sample."""
+    r_format = (
+        float(format_score_override)
+        if format_score_override is not None
+        else reward_format(response_text)
+    )
+
+    # Mirror the training short-circuit so logged components stay aligned
+    # with the actual scalar reward seen by GRPO.
+    if r_format <= -1.0:
+        return {
+            "format": r_format,
+            "keyword": 0.0,
+            "relevance": 0.0,
+            "humor": 0.0,
+            "weighted_total": r_format,
+            "short_circuit": 1.0,
+        }
+
+    r_keyword = reward_keyword(response_text, keywords or [])
+    r_relevance = reward_relevance(headline or "", response_text)
+
+    if humor_score_override is not None:
+        r_humor = max(-1.0, min(1.0, float(humor_score_override)))
+    else:
+        r_humor = reward_humor(prompt_text, response_text, humor_scorer)
+
+    total = (
+        WEIGHT_FORMAT * r_format
+        + WEIGHT_KEYWORD * r_keyword
+        + WEIGHT_RELEVANCE * r_relevance
+        + WEIGHT_HUMOR * r_humor
+    )
+
+    return {
+        "format": r_format,
+        "keyword": r_keyword,
+        "relevance": r_relevance,
+        "humor": r_humor,
+        "weighted_total": total,
+        "short_circuit": 0.0,
+    }
+
+
 def compute_reward(
     prompt_text: str,
     response_text: str,
@@ -494,31 +584,15 @@ def compute_reward(
         >>> compute_reward("Tell a joke", "Why did the chicken cross the road?", [])
         0.5  # 1.0 * 0.5 + 2.0 * 0.0 + 0.5 * 0.0 + 1.5 * 0.0
     """
-    r_format = reward_format(response_text)
-
-    # Short-circuit: severely non-compliant format -> skip remaining checks.
-    # This gives a clear negative signal and avoids wasting compute on
-    # obviously bad outputs (e.g., empty strings, degenerate repetitions).
-    if r_format <= -1.0:
-        return r_format
-
-    r_keyword = reward_keyword(response_text, keywords or [])
-    r_relevance = reward_relevance(headline or "", response_text)
-
-    # Humor score: use override if provided (batch path), else call scorer
-    if humor_score_override is not None:
-        r_humor = max(-1.0, min(1.0, float(humor_score_override)))
-    else:
-        r_humor = reward_humor(prompt_text, response_text, humor_scorer)
-
-    total = (
-        WEIGHT_FORMAT * r_format
-        + WEIGHT_KEYWORD * r_keyword
-        + WEIGHT_RELEVANCE * r_relevance
-        + WEIGHT_HUMOR * r_humor
+    components = compute_reward_components(
+        prompt_text=prompt_text,
+        response_text=response_text,
+        keywords=keywords,
+        headline=headline,
+        humor_scorer=humor_scorer,
+        humor_score_override=humor_score_override,
     )
-
-    return total
+    return components["weighted_total"]
 
 
 # ============================================================
@@ -528,6 +602,7 @@ def compute_reward(
 def build_reward_fn(
     humor_scorer: Callable[[str, str], float] | None = None,
     batch_humor_scorer: Callable[[list[str], list[str]], list[float]] | None = None,
+    stats_recorder: RewardStatsRecorder | None = None,
 ) -> Callable:
     """Build a reward function compatible with TRL GRPOTrainer (v0.27.1).
 
@@ -637,6 +712,7 @@ def build_reward_fn(
 
         # Step 2: Batch humor scoring (if batch scorer provided)
         humor_scores: list[float | None] = [None] * n
+        format_rewards: list[float | None] = None
 
         if batch_humor_scorer is not None:
             # Pre-compute format rewards to identify degenerate samples
@@ -656,8 +732,16 @@ def build_reward_fn(
 
         # Step 3: Compute composite reward for each sample
         rewards = []
+        component_values = {
+            "format": [],
+            "keyword": [],
+            "relevance": [],
+            "humor": [],
+            "weighted_total": [],
+            "short_circuit": [],
+        }
         for i in range(n):
-            reward = compute_reward(
+            components = compute_reward_components(
                 prompt_text=prompt_texts[i],
                 response_text=response_texts[i],
                 keywords=kw_list[i],
@@ -666,8 +750,21 @@ def build_reward_fn(
                 humor_scorer=humor_scorer if batch_humor_scorer is None else None,
                 # Pre-computed batch humor score (None if not available)
                 humor_score_override=humor_scores[i],
+                format_score_override=format_rewards[i] if format_rewards is not None else None,
             )
-            rewards.append(reward)
+            rewards.append(components["weighted_total"])
+            for key in component_values:
+                component_values[key].append(components[key])
+
+        if stats_recorder is not None and n > 0:
+            stats_recorder.record({
+                "format_mean": sum(component_values["format"]) / n,
+                "keyword_mean": sum(component_values["keyword"]) / n,
+                "relevance_mean": sum(component_values["relevance"]) / n,
+                "humor_mean": sum(component_values["humor"]) / n,
+                "weighted_total_mean": sum(component_values["weighted_total"]) / n,
+                "short_circuit_rate": sum(component_values["short_circuit"]) / n,
+            })
 
         return rewards
 
