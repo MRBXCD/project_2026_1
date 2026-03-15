@@ -14,9 +14,12 @@ Comparison pairs:
     - SFT  vs GRPO   (GRPO-stage incremental gain)
     - Base vs SFT    (SFT-stage incremental gain)
 
-Usage:
+Usage (standalone):
     python -m evaluation.eval_llm_judge
     python -m evaluation.eval_llm_judge --pairs "base:grpo,sft:grpo"
+
+Usage (via pipeline):
+    python -m evaluation.pipeline --steps llm_judge
 
 Dependencies:
     - google-genai (Google Gemini API)
@@ -26,11 +29,9 @@ Dependencies:
 import argparse
 import json
 import os
-import random
 import re
 import time
 from pathlib import Path
-from typing import Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -278,32 +279,37 @@ def print_summary(all_summaries: list[dict]):
 
 
 # ============================================================
-# Main
+# Programmatic Entry Point (for pipeline)
 # ============================================================
 
-def main():
-    parser = argparse.ArgumentParser(description="LLM-as-Judge pairwise evaluation")
-    parser.add_argument(
-        "--pairs", type=str, default="base:grpo,sft:grpo,base:sft",
-        help="Comma-separated model pairs to compare, e.g. 'base:grpo,sft:grpo'",
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default=str(OUTPUT_DIR),
-    )
-    args = parser.parse_args()
+def run(
+    pairs: list[tuple[str, str]] | None = None,
+    output_dir: str | Path | None = None,
+    results_dir: str | Path | None = None,
+) -> list[dict] | None:
+    """Programmatic entry point for the llm_judge step.
 
-    output_dir = Path(args.output_dir)
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    Args:
+        pairs: List of (model_a, model_b) tuples to compare.
+        output_dir: Directory containing model output JSONL files.
+        results_dir: Directory to save judge results.
+
+    Returns:
+        List of summary dicts, or None if no comparisons were made.
+    """
+    if pairs is None:
+        pairs = [("base", "grpo"), ("sft", "grpo"), ("base", "sft")]
+    out_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+    res_dir = Path(results_dir) if results_dir else RESULTS_DIR
+    res_dir.mkdir(parents=True, exist_ok=True)
 
     client = _init_gemini_client()
-
-    pairs = [p.strip().split(":") for p in args.pairs.split(",")]
 
     model_cache: dict[str, list[dict]] = {}
     for ma, mb in pairs:
         for m in (ma, mb):
             if m not in model_cache:
-                path = output_dir / f"{m}.jsonl"
+                path = out_dir / f"{m}.jsonl"
                 if not path.exists():
                     print(f"Warning: {path} not found, skipping pairs involving {m}")
                     model_cache[m] = []
@@ -336,16 +342,37 @@ def main():
         print(f"{'=' * 60}")
         print_summary(all_summaries)
 
-        summary_path = RESULTS_DIR / "llm_judge.json"
+        summary_path = res_dir / "llm_judge.json"
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(all_summaries, f, ensure_ascii=False, indent=2)
         print(f"\nSummary saved to {summary_path}")
 
-        details_path = RESULTS_DIR / "llm_judge_details.jsonl"
+        details_path = res_dir / "llm_judge_details.jsonl"
         with open(details_path, "w", encoding="utf-8") as f:
             for d in all_details:
                 f.write(json.dumps(d, ensure_ascii=False) + "\n")
         print(f"Details saved to {details_path}")
+
+    return all_summaries if all_summaries else None
+
+
+# ============================================================
+# CLI Entry Point
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="LLM-as-Judge pairwise evaluation")
+    parser.add_argument(
+        "--pairs", type=str, default="base:grpo,sft:grpo,base:sft",
+        help="Comma-separated model pairs to compare, e.g. 'base:grpo,sft:grpo'",
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default=str(OUTPUT_DIR),
+    )
+    args = parser.parse_args()
+
+    parsed_pairs = [tuple(p.strip().split(":")) for p in args.pairs.split(",")]
+    run(pairs=parsed_pairs, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

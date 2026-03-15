@@ -9,9 +9,12 @@ before loading the next one (to fit within a single GPU).
 For each prompt, N candidate responses are generated and the best one
 is selected via rejection sampling (keyword filtering + reward scoring).
 
-Usage:
+Usage (standalone):
     python -m evaluation.generate_outputs --models base,sft,grpo
     python -m evaluation.generate_outputs --models grpo --n_candidates 32
+
+Usage (via pipeline):
+    python -m evaluation.pipeline --steps generate
 
 Output:
     evaluation/outputs/{model_name}.jsonl
@@ -221,7 +224,75 @@ def run_generation(
 
 
 # ============================================================
-# Main
+# Programmatic Entry Point (for pipeline)
+# ============================================================
+
+def run(
+    models: list[str] | None = None,
+    base_model: str = "Qwen/Qwen3-8B",
+    sft_repo: str = "MRBSTUDIO/Humor-Qwen3-8B-SFT",
+    grpo_repo: str = "MRBSTUDIO/Humor-Qwen3-8B-GRPO",
+    eval_file: str | Path | None = None,
+    n_candidates: int = 16,
+    max_new_tokens: int = 256,
+    temperature: float = 0.9,
+    output_dir: str | Path | None = None,
+):
+    """Programmatic entry point for the generate step."""
+    if models is None:
+        models = ["base", "sft", "grpo"]
+    eval_path = Path(eval_file) if eval_file else EVAL_PROMPTS_FILE
+    out_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+
+    if not eval_path.exists():
+        raise FileNotFoundError(
+            f"Evaluation prompts not found at {eval_path}. "
+            f"Run: python -m data_preprocessing.pipeline --stage format_grpo --eval_ratio 0.2"
+        )
+
+    with open(eval_path, encoding="utf-8") as f:
+        prompts = [json.loads(line) for line in f if line.strip()]
+    print(f"Loaded {len(prompts)} evaluation prompts from {eval_path}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    loaders = {
+        "base": lambda: _load_base(base_model),
+        "sft": lambda: _load_sft(base_model, sft_repo),
+        "grpo": lambda: _load_grpo(base_model, sft_repo, grpo_repo),
+    }
+
+    for model_name in models:
+        if model_name not in loaders:
+            print(f"Unknown model: {model_name}, skipping")
+            continue
+
+        print(f"\n{'=' * 60}")
+        print(f"Generating with: {model_name}")
+        print(f"{'=' * 60}")
+
+        model, tokenizer = loaders[model_name]()
+
+        results = run_generation(
+            model, tokenizer, prompts,
+            n_candidates=n_candidates,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+        )
+
+        _unload(model, tokenizer)
+
+        out_path = out_dir / f"{model_name}.jsonl"
+        with open(out_path, "w", encoding="utf-8") as f:
+            for r in results:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"  Saved {len(results)} results to {out_path}")
+
+    print("\nGeneration complete.")
+
+
+# ============================================================
+# CLI Entry Point
 # ============================================================
 
 def main():
@@ -251,53 +322,16 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.9)
     args = parser.parse_args()
 
-    eval_path = Path(args.eval_file)
-    if not eval_path.exists():
-        raise FileNotFoundError(
-            f"Evaluation prompts not found at {eval_path}. "
-            f"Run: python -m data_preprocessing.pipeline --stage format_grpo --eval_ratio 0.2"
-        )
-
-    with open(eval_path, encoding="utf-8") as f:
-        prompts = [json.loads(line) for line in f if line.strip()]
-    print(f"Loaded {len(prompts)} evaluation prompts from {eval_path}")
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    model_names = [m.strip() for m in args.models.split(",")]
-
-    loaders = {
-        "base": lambda: _load_base(args.base_model),
-        "sft": lambda: _load_sft(args.base_model, args.sft_repo),
-        "grpo": lambda: _load_grpo(args.base_model, args.sft_repo, args.grpo_repo),
-    }
-
-    for model_name in model_names:
-        if model_name not in loaders:
-            print(f"Unknown model: {model_name}, skipping")
-            continue
-
-        print(f"\n{'=' * 60}")
-        print(f"Generating with: {model_name}")
-        print(f"{'=' * 60}")
-
-        model, tokenizer = loaders[model_name]()
-
-        results = run_generation(
-            model, tokenizer, prompts,
-            n_candidates=args.n_candidates,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-        )
-
-        _unload(model, tokenizer)
-
-        out_path = OUTPUT_DIR / f"{model_name}.jsonl"
-        with open(out_path, "w", encoding="utf-8") as f:
-            for r in results:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"  Saved {len(results)} results to {out_path}")
-
-    print("\nGeneration complete.")
+    run(
+        models=[m.strip() for m in args.models.split(",")],
+        base_model=args.base_model,
+        sft_repo=args.sft_repo,
+        grpo_repo=args.grpo_repo,
+        eval_file=args.eval_file,
+        n_candidates=args.n_candidates,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+    )
 
 
 if __name__ == "__main__":

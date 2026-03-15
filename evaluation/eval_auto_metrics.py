@@ -12,15 +12,17 @@ Metrics:
     - Degeneracy Rate: fraction of responses with trigram uniqueness < 0.5
     - Length Statistics: mean, median, min, max response character length
 
-Usage:
+Usage (standalone):
     python -m evaluation.eval_auto_metrics
     python -m evaluation.eval_auto_metrics --models base,grpo
+
+Usage (via pipeline):
+    python -m evaluation.pipeline --steps auto_metrics
 """
 
 import argparse
 import json
 import statistics
-from collections import Counter
 from pathlib import Path
 
 
@@ -174,30 +176,31 @@ def print_comparison_table(all_metrics: dict[str, dict]):
 
 
 # ============================================================
-# Main
+# Programmatic Entry Point (for pipeline)
 # ============================================================
 
-def main():
-    parser = argparse.ArgumentParser(description="Compute automated evaluation metrics")
-    parser.add_argument(
-        "--models", type=str, default="base,sft,grpo",
-        help="Comma-separated model names (must have corresponding output files)",
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default=str(OUTPUT_DIR),
-        help="Directory containing model output JSONL files",
-    )
-    args = parser.parse_args()
+def run(
+    models: list[str] | None = None,
+    output_dir: str | Path | None = None,
+    results_dir: str | Path | None = None,
+) -> dict | None:
+    """Programmatic entry point for the auto_metrics step.
 
-    model_names = [m.strip() for m in args.models.split(",")]
-    output_dir = Path(args.output_dir)
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    Returns:
+        Results dict with "overall" and "per_language" keys, or None if
+        no model outputs are found.
+    """
+    if models is None:
+        models = ["base", "sft", "grpo"]
+    out_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+    res_dir = Path(results_dir) if results_dir else RESULTS_DIR
+    res_dir.mkdir(parents=True, exist_ok=True)
 
     all_metrics: dict[str, dict] = {}
     all_per_lang: dict[str, dict] = {}
 
-    for model_name in model_names:
-        path = output_dir / f"{model_name}.jsonl"
+    for model_name in models:
+        path = out_dir / f"{model_name}.jsonl"
         if not path.exists():
             print(f"Warning: {path} not found, skipping {model_name}")
             continue
@@ -212,7 +215,7 @@ def main():
 
     if not all_metrics:
         print("No model outputs found. Run generate_outputs.py first.")
-        return
+        return None
 
     print(f"\n{'=' * 60}")
     print("Overall Metrics Comparison")
@@ -232,10 +235,34 @@ def main():
         "overall": all_metrics,
         "per_language": all_per_lang,
     }
-    report_path = RESULTS_DIR / "auto_metrics.json"
+    report_path = res_dir / "auto_metrics.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     print(f"\nResults saved to {report_path}")
+
+    return report
+
+
+# ============================================================
+# CLI Entry Point
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Compute automated evaluation metrics")
+    parser.add_argument(
+        "--models", type=str, default="base,sft,grpo",
+        help="Comma-separated model names (must have corresponding output files)",
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default=str(OUTPUT_DIR),
+        help="Directory containing model output JSONL files",
+    )
+    args = parser.parse_args()
+
+    run(
+        models=[m.strip() for m in args.models.split(",")],
+        output_dir=args.output_dir,
+    )
 
 
 if __name__ == "__main__":

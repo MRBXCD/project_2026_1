@@ -1,1 +1,1 @@
-"""SFT training and evaluation entrypoints."""
+"""SFT training entrypoint."""
