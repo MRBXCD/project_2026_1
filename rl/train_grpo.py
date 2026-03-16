@@ -183,15 +183,15 @@ def load_sft_merged_model(
     print(f"  Base model parameters: {model.num_parameters() / 1e9:.1f}B")
 
     # Load SFT LoRA adapter (local path or Hub repo ID both accepted by PeftModel)
-    print(f"Loading SFT adapter: {sft_adapter_repo_str}")
-    model = PeftModel.from_pretrained(model, sft_adapter_repo_str)
+    # print(f"Loading SFT adapter: {sft_adapter_repo_str}")
+    # model = PeftModel.from_pretrained(model, sft_adapter_repo_str)
 
-    # Merge LoRA weights into base model and discard adapter structure.
-    # After this call, model is a plain PreTrainedModel (not PeftModel)
-    # with the SFT knowledge permanently fused into its weights.
-    print("Merging SFT adapter into base weights...")
-    model = model.merge_and_unload()
-    print("  Merge complete. Model is now a standard PreTrainedModel.")
+    # # Merge LoRA weights into base model and discard adapter structure.
+    # # After this call, model is a plain PreTrainedModel (not PeftModel)
+    # # with the SFT knowledge permanently fused into its weights.
+    # print("Merging SFT adapter into base weights...")
+    # model = model.merge_and_unload()
+    # print("  Merge complete. Model is now a standard PreTrainedModel.")
 
     return model, tokenizer
 
@@ -553,7 +553,7 @@ def main():
              "Leave empty to skip upload. Requires HF_TOKEN environment variable.",
     )
     parser.add_argument(
-        "--tag", type=str, default="normal",
+        "--tag", type=str, default="with_base_model",
         help="Tag for the training run",
     )
     args = parser.parse_args()
@@ -563,7 +563,7 @@ def main():
 
     # ---- Step 1: Load Model (Base + Merge SFT Adapter) ----
     print("=" * 60)
-    print("Step 1: Load model (base + merge SFT adapter)")
+    print("Step 1: Load model (base only)")
     print("=" * 60)
     model, tokenizer = load_sft_merged_model(
         base_model_name=args.model_name,
