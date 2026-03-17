@@ -128,8 +128,13 @@ def _prepare_grpo_merged_model(
     sft_repo: str,
     grpo_repo: str,
     save_dir: Path,
+    skip_sft: bool = False,
 ) -> Path:
-    """Merge SFT + GRPO adapters into base model and save to disk."""
+    """Merge adapters into base model and save to disk for lm-eval.
+
+    Args:
+        skip_sft: If True, merge only GRPO adapter into base (no SFT).
+    """
     if save_dir.exists():
         print(f"  Merged GRPO model already exists at {save_dir}, skipping merge")
         return save_dir
@@ -138,13 +143,15 @@ def _prepare_grpo_merged_model(
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    print(f"  Merging SFT+GRPO adapters into base model -> {save_dir}")
+    label = "GRPO" if skip_sft else "SFT+GRPO"
+    print(f"  Merging {label} adapters into base model -> {save_dir}")
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     model = AutoModelForCausalLM.from_pretrained(
         base_model, torch_dtype=torch.bfloat16, device_map="cpu"
     )
-    model = PeftModel.from_pretrained(model, sft_repo)
-    model = model.merge_and_unload()
+    if not skip_sft:
+        model = PeftModel.from_pretrained(model, sft_repo)
+        model = model.merge_and_unload()
     model = PeftModel.from_pretrained(model, grpo_repo)
     model = model.merge_and_unload()
 
@@ -168,6 +175,7 @@ def run_benchmarks(
     device: str = "cuda:0",
     limit: str | None = None,
     sft_eval_mode: str = "peft",
+    skip_sft_for_grpo: bool = False,
 ):
     """Run lm-eval benchmarks for the specified models."""
     for model_name in models:
@@ -203,6 +211,7 @@ def run_benchmarks(
             merged_dir = _prepare_grpo_merged_model(
                 base_model, sft_repo, grpo_repo,
                 EVAL_DIR / "merged_grpo_model",
+                skip_sft=skip_sft_for_grpo,
             )
             model_args = (
                 f"pretrained={merged_dir},"
@@ -510,12 +519,15 @@ def run(
     sft_eval_mode: str = "peft",
     top_k: int = 10,
     results_dir: Path | None = None,
+    skip_sft_for_grpo: bool = False,
 ) -> dict | None:
     """Programmatic entry point for the benchmark step.
 
     Args:
         mode: "run" to only run benchmarks, "compare" to only compare,
               "all" to run then compare.
+        skip_sft_for_grpo: If True, merge only GRPO adapter into base
+            model without SFT (for base->GRPO experiments).
 
     Returns:
         Comparison data dict saved to results, or None if compare not run.
@@ -539,6 +551,7 @@ def run(
             device=device,
             limit=limit,
             sft_eval_mode=sft_eval_mode,
+            skip_sft_for_grpo=skip_sft_for_grpo,
         )
 
     if mode in ("compare", "all"):
@@ -616,6 +629,10 @@ def main():
     parser.add_argument("--sft_eval_mode", type=str, default="peft",
                         choices=["peft", "merge"])
     parser.add_argument("--top_k", type=int, default=10)
+    parser.add_argument(
+        "--skip_sft_for_grpo", action="store_true",
+        help="Merge only GRPO adapter into base model without SFT",
+    )
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",")]
@@ -632,6 +649,7 @@ def main():
         limit=args.limit,
         sft_eval_mode=args.sft_eval_mode,
         top_k=args.top_k,
+        skip_sft_for_grpo=args.skip_sft_for_grpo,
     )
 
 

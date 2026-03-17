@@ -27,3 +27,5 @@ wandb/
 *.zip
 
 commits/
+
+*/commits/
