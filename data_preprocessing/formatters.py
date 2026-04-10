@@ -40,43 +40,22 @@ from data_preprocessing.prompt_templates import (
     build_headline_prompt,
     build_keyword_prompt,
 )
-
-
-# ============================================================
-# Reward Pair Allocation Config
-# ============================================================
-# Per-language allocation for reward model preference pairs.
-#   score_based: max number of score-based (joke-vs-joke) pairs to keep.
-#                None means use all available.
-#   synthesized: max number of synthesized hard-negative pairs to keep.
-#                None means use all available.
-REWARD_PAIR_ALLOCATION = {
-    "en": {"score_based": 7_000, "synthesized": 7_000},
-    "es": {"score_based": 7_000, "synthesized": 7_000},
-    "zh": {"score_based": 7_000, "synthesized": 7_000},
-}
-
-# Fine-grained score-bucket configuration for reward pair construction
-REWARD_SCORE_BUCKETS = 4
-REWARD_PAIR_TEMPLATES = [(3, 2), (2, 1), (1, 0), (3, 1), (2, 0), (3, 0)]
-REWARD_TEMPLATE_RATIOS = {
-    (3, 2): 0.20,
-    (2, 1): 0.18,
-    (1, 0): 0.12,
-    (3, 1): 0.16,
-    (2, 0): 0.14,
-    (3, 0): 0.20,
-}
-# Deprecated in current reward sampling policy.
-# Synthesized data is now controlled only by explicit per-language
-# allocation caps in REWARD_PAIR_ALLOCATION[*]["synthesized"].
-MAX_SYNTH_RATIO_BY_LANG: dict[str, float] = {}
-MAX_REUSE_PER_CHOSEN_BY_LANG = {"en": 4, "es": 5, "zh": 6}
-MAX_REUSE_PER_REJECTED_BY_LANG = {"en": 4, "es": 5, "zh": 6}
-MAX_PAIR_REUSE_ROUNDS = 3
-REUSE_MONITOR_ENABLED = True
-REUSE_WARN_RATIO = 0.8
-REUSE_STATS_EXPORT_PATH = None
+from data_preprocessing.config import (
+    SFT_TYPE_A_SOURCE_SELECTION,
+    SFT_TYPE_A_RATIO,
+    SFT_VAL_RATIO,
+    REWARD_PAIR_ALLOCATION,
+    REWARD_SCORE_BUCKETS,
+    REWARD_PAIR_TEMPLATES,
+    REWARD_TEMPLATE_RATIOS,
+    MAX_SYNTH_RATIO_BY_LANG,
+    MAX_REUSE_PER_CHOSEN_BY_LANG,
+    MAX_REUSE_PER_REJECTED_BY_LANG,
+    MAX_PAIR_REUSE_ROUNDS,
+    REUSE_MONITOR_ENABLED,
+    REUSE_WARN_RATIO,
+    REUSE_STATS_EXPORT_PATH,
+)
 
 
 # ============================================================
@@ -118,16 +97,7 @@ def format_sft_type_a(
             - messages (list[dict]): Chat format dialogue
               [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
     """
-    # Fixed Type A source policy:
-    # - rjokes: top 1000 by score
-    # - haha: top 1000 by score
-    # - cfun: random 1000
-    # - chinese_humor: excluded from SFT Type A
-    source_selection = {
-        "rjokes": {"strategy": "top_by_score", "count": 1000},
-        "haha": {"strategy": "top_by_score", "count": 1000},
-        "cfun": {"strategy": "random", "count": 1000},
-    }
+    source_selection = SFT_TYPE_A_SOURCE_SELECTION
     normalized_exclude_texts = {
         re.sub(r"\s+", " ", text).strip()
         for text in (exclude_texts or set())
@@ -210,8 +180,8 @@ def format_sft_type_a(
 def format_sft(
     unified_datasets: dict[str, datasets.Dataset],
     synthesized_dir: str | Path | None = None,
-    type_a_ratio: float = 0.7,
-    val_ratio: float = 0.1,
+    type_a_ratio: float = SFT_TYPE_A_RATIO,
+    val_ratio: float = SFT_VAL_RATIO,
     seed: int = 42,
     **type_a_kwargs,
 ) -> datasets.DatasetDict:
