@@ -11,16 +11,23 @@
 - [5. Stage 1: Supervised Fine-Tuning (SFT)](#5-stage-1-supervised-fine-tuning-sft)
   - [5.1 SFT Objectives](#51-sft-objectives)
   - [5.2 LoRA Configuration](#52-lora-configuration)
-  - [5.3 Training Configuration and Code](#53-training-configuration-and-code)
+  - [5.3 Training Configuration](#53-training-configuration)
 - [6. Stage 2: Group Relative Policy Optimization (GRPO)](#6-stage-2-group-relative-policy-optimization-grpo)
   - [6.1 GRPO Principle Overview](#61-grpo-principle-overview)
-  - [6.2 Reward Function Design (Core)](#62-reward-function-design-core)
-  - [6.3 Training Configuration and Code](#63-training-configuration-and-code)
+  - [6.2 Reward Function Design](#62-reward-function-design)
+  - [6.3 Training Configuration](#63-training-configuration)
 - [7. Inference and Constraint Satisfaction](#7-inference-and-constraint-satisfaction)
   - [7.1 Rejection Sampling](#71-rejection-sampling)
   - [7.2 Inference Pipeline](#72-inference-pipeline)
 - [8. Evaluation Scheme](#8-evaluation-scheme)
-- [9. Project Directory Structure (Proposed)](#9-project-directory-structure-proposed)
+  - [8.1 Pipeline Overview](#81-pipeline-overview)
+  - [8.2 General Capability Benchmark](#82-general-capability-benchmark)
+  - [8.3 Output Generation with Rejection Sampling](#83-output-generation-with-rejection-sampling)
+  - [8.4 Automated Metrics (Tier 1)](#84-automated-metrics-tier-1)
+  - [8.5 LLM-as-Judge Pairwise Comparison (Tier 2)](#85-llm-as-judge-pairwise-comparison-tier-2)
+  - [8.6 Human Evaluation (Tier 3)](#86-human-evaluation-tier-3)
+  - [8.7 Report Aggregation](#87-report-aggregation)
+- [9. Project Directory Structure](#9-project-directory-structure)
 - [10. Timeline and Milestones](#10-timeline-and-milestones)
 - [Appendix A: GRPO Mathematical Principles](#appendix-a-grpo-mathematical-principles)
 - [Appendix B: FAQ and Hyperparameter Tuning Suggestions](#appendix-b-faq-and-hyperparameter-tuning-suggestions)
@@ -68,7 +75,7 @@
 │  │  ┌─────────┐    ┌──────────────┐    ┌────────────────┐  │   │
 │  │  │ Policy  │───▶│  Group       │───▶│  Reward        │  │   │
 │  │  │ Model   │    │  Sampling    │    │  Function      │  │   │
-│  │  │(Post-SFT)│    │  (G=8/group) │    │  (Rule+LLM)    │  │   │
+│  │  │(Post-SFT)│    │ (G=16/group) │    │  (Rule+LLM)    │  │   │
 │  │  └────┬────┘    └──────────────┘    └────────┬───────┘  │   │
 │  │       │                                       │          │   │
 │  │       │         ┌──────────────┐              │          │   │
@@ -94,37 +101,9 @@
 
 ### 3.1 Core Dependencies
 
-```txt
-# requirements.txt
-torch>=2.4.0
-transformers>=4.51.0
-accelerate>=1.2.0
-peft>=0.14.0
-trl>=0.18.0
-bitsandbytes>=0.45.0
-datasets>=3.0.0
-vllm>=0.7.0
-flash-attn>=2.7.0
+Key packages: `torch>=2.4.0`, `transformers>=4.51.0`, `accelerate>=1.2.0`, `peft>=0.14.0`, `trl>=0.29.0`, `datasets>=3.0.0`, `flash-attn>=2.7.0`. Full dependency list is in `pyproject.toml`.
 
-# Data Processing
-pandas>=2.0.0
-numpy>=1.24.0
-
-# Evaluation
-rouge-score
-nltk
-scikit-learn
-
-# Experiment Management
-wandb
-tensorboard
-tqdm
-
-# Inference Acceleration (Optional)
-vllm>=0.7.0
-```
-
-> **Note**: `trl>=0.18.0` is critical because GRPOTrainer matured in newer versions. It is recommended not to specify an upper bound version during installation, just use the latest.
+> **Note**: `trl>=0.29.0` is required for the GRPOTrainer API used in this project. It is recommended not to specify an upper bound version during installation, just use the latest.
 
 ### 3.2 Dockerfile Update Suggestions
 
@@ -132,10 +111,7 @@ The existing Dockerfile is basically usable, but it is recommended to update `tr
 
 ### 3.3 Model Download
 
-```bash
-# Use huggingface-cli to download model (execute inside container)
-huggingface-cli download Qwen/Qwen3-8B --local-dir /workspace/models/Qwen3-8B
-```
+Use `huggingface-cli download Qwen/Qwen3-8B` to download the base model inside the container.
 
 ---
 
@@ -195,164 +171,21 @@ All data is unified into **chat template** format to match Qwen3's chat format:
 }
 ```
 
-> **Key**: Type B data needs to be generated through synthesis (see script below). It is recommended that the ratio of Type A to Type B in SFT data be approximately **6:4** or **7:3**.
+> **Key**: Type B data needs to be generated through synthesis. It is recommended that the ratio of Type A to Type B in SFT data be approximately **6:4** or **7:3**.
 
-#### 4.1.3 Data Synthesis Script Idea
+#### 4.1.3 Data Synthesis Strategy
 
-Synthesis flow for task-formatted data (Type B):
-
-```python
-"""
-Example idea for synthesizing task-formatted SFT data (Pseudocode)
-
-Core Idea:
-1. Extract headlines from news datasets (e.g., SemEval provided headlines or public news datasets)
-2. Randomly pair two low-frequency words from vocabulary as keyword constraints
-3. Call strong model (Gemini / GPT-4) to generate humorous responses satisfying constraints
-4. Perform quality filtering and store
-"""
-import random
-import json
-
-
-def build_prompt_for_synthesis(headline: str, word1: str, word2: str, lang: str) -> str:
-    """Construct prompt to let strong model generate humorous response"""
-    if lang == "en":
-        return (
-            f"You are a professional comedy writer. "
-            f"Write a short, clever one-liner joke inspired by the following news headline. "
-            f"The joke MUST naturally include both words: '{word1}' and '{word2}'.\n\n"
-            f"Headline: \"{headline}\"\n\n"
-            f"Requirements:\n"
-            f"- One sentence only\n"
-            f"- Must contain '{word1}' and '{word2}'\n"
-            f"- Should be genuinely funny, not forced\n\n"
-            f"Joke:"
-        )
-    elif lang == "zh":
-        return (
-            f"你是一位专业的喜剧作家。"
-            f"根据以下新闻标题，写一个简短而巧妙的笑话。"
-            f"笑话中必须自然地包含以下两个词：'{word1}' 和 '{word2}'。\n\n"
-            f"新闻标题：「{headline}」\n\n"
-            f"要求：\n"
-            f"- 仅一句话\n"
-            f"- 必须包含'{word1}'和'{word2}'\n"
-            f"- 要真正有趣\n\n"
-            f"笑话："
-        )
-    elif lang == "es":
-        return (
-            f"Eres un escritor de comedia profesional. "
-            f"Escribe un chiste corto e ingenioso inspirado en el siguiente titular de noticias. "
-            f"El chiste DEBE incluir naturalmente ambas palabras: '{word1}' y '{word2}'.\n\n"
-            f"Titular: \"{headline}\"\n\n"
-            f"Requisitos:\n"
-            f"- Solo una oración\n"
-            f"- Debe contener '{word1}' y '{word2}'\n"
-            f"- Debe ser genuinamente gracioso\n\n"
-            f"Chiste:"
-        )
-
-
-def build_sft_example(headline: str, word1: str, word2: str, 
-                       response: str, lang: str) -> dict:
-    """Wrap synthesis result into SFT training format"""
-    if lang == "en":
-        user_msg = (
-            f"You are a witty comedian. Given the following news headline, "
-            f"write a short, funny one-liner joke inspired by it.\n\n"
-            f"Headline: \"{headline}\"\n"
-            f"Required words: {word1}, {word2}\n\n"
-            f"Write a humorous one-liner that includes both required words."
-        )
-    elif lang == "zh":
-        user_msg = (
-            f"你是一位机智的喜剧演员。根据以下新闻标题，"
-            f"写一个简短有趣的笑话。\n\n"
-            f"新闻标题：「{headline}」\n"
-            f"必须包含的词语：{word1}、{word2}\n\n"
-            f"写一句包含以上两个词语的幽默段子。"
-        )
-    elif lang == "es":
-        user_msg = (
-            f"Eres un comediante ingenioso. Dado el siguiente titular de noticias, "
-            f"escribe un chiste corto y divertido inspirado en él.\n\n"
-            f"Titular: \"{headline}\"\n"
-            f"Palabras requeridas: {word1}, {word2}\n\n"
-            f"Escribe un chiste de una línea que incluya ambas palabras."
-        )
-
-    return {
-        "messages": [
-            {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": response}
-        ]
-    }
-
-
-# === Synthesis Flow (Conceptual code, needs API call logic) ===
-def synthesize_task_data(headlines: list, word_pairs: list, lang: str, 
-                          api_call_fn, n_samples: int = 500) -> list:
-    """
-    headlines: List of news headlines
-    word_pairs: [(word1, word2), ...] List of keyword pairs
-    lang: Language code "en" / "zh" / "es"
-    api_call_fn: Function to call strong model (prompt) -> response
-    """
-    results = []
-    for i in range(n_samples):
-        headline = random.choice(headlines)
-        w1, w2 = random.choice(word_pairs)
-        
-        synthesis_prompt = build_prompt_for_synthesis(headline, w1, w2, lang)
-        response = api_call_fn(synthesis_prompt)
-        
-        # Quality Filter: Check if keywords actually appear in response
-        if w1.lower() in response.lower() and w2.lower() in response.lower():
-            example = build_sft_example(headline, w1, w2, response, lang)
-            results.append(example)
-    
-    return results
-```
+Type B task-formatted data synthesis flow (implemented in `data_preprocessing/synthesize_task_data.py`):
+1. Extract headlines from news datasets (Babel Briefings)
+2. Randomly pair keywords from language-specific vocabulary pools
+3. Call Gemini API to generate humorous responses satisfying constraints
+4. Quality filter: verify keyword inclusion, language match, and response quality
 
 #### 4.1.4 rJokes Data Processing Points
 
 rJokes dataset comes with scores, which can be used for two things:
-1. **SFT**: Filter high-score (e.g., score > 10) jokes as response corpus
-2. **Subsequent Reward Model Training** (if needed): Construct preference pairs using high-score vs low-score
-
-```python
-"""rJokes Data Preprocessing Idea"""
-import pandas as pd
-
-# rJokes TSV format usually is: id, body (setup), score, ...
-# Adjust based on actual column names
-df = pd.read_csv("data/sft/raw/rjoke/train.tsv.gz", sep="\t", compression="gzip")
-
-# Filter high quality jokes for SFT
-high_quality = df[df["score"] > 10].copy()
-
-# Convert to SFT format
-sft_data = []
-generic_prompts_en = [
-    "Tell me a joke.",
-    "Make me laugh with a short joke.",
-    "Can you tell me something funny?",
-    "I need a good laugh. Give me a joke.",
-    "Share a humorous one-liner.",
-]
-
-for _, row in high_quality.iterrows():
-    joke_text = row["body"]  # Adjust based on actual column name
-    prompt = random.choice(generic_prompts_en)
-    sft_data.append({
-        "messages": [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": joke_text}
-        ]
-    })
-```
+1. **SFT**: Filter high-score jokes as response corpus (score normalization via log-cap in `data_preprocessing/parsers.py`)
+2. **Reward Model Training**: Construct preference pairs using high-score vs low-score/synthesized-boring texts
 
 ### 4.2 GRPO Training Data and Reward Design
 
@@ -369,146 +202,26 @@ for _, row in high_quality.iterrows():
 
 #### 4.2.2 Reward Function Design (Core of the Core)
 
-The effectiveness of GRPO training **highly depends on the quality of the reward function**. We design a **composite reward function**, including rule-based terms and model scoring terms:
+The effectiveness of GRPO training **highly depends on the quality of the reward function**. We design a **composite reward function**:
 
-```python
-"""
-GRPO Reward Function Design
+$$R_{total} = 1.0 \cdot R_{format} + 2.0 \cdot R_{keyword} + 0.5 \cdot R_{relevance} + 1.5 \cdot R_{humor}$$
 
-Reward = R_format + R_keyword + R_relevance + R_humor
+| Component | Type | Description |
+|---|---|---|
+| `R_format` | Hard constraint (rule) | Length check, non-empty, repetition check. Accumulates penalties for compound failures. |
+| `R_keyword` | Hard constraint (rule) | +1.0 per keyword hit, bonus for all-hit, -1.0 for zero hits. |
+| `R_relevance` | Soft constraint (rule) | Triangular overlap curve peaking at ~30% headline-response token overlap. Weight intentionally low (0.5) as word overlap is a noisy proxy. |
+| `R_humor` | Soft constraint (scorer) | Phase 1: returns 0.0 (no scorer). Phase 2: external scorer via `--use_humor_judge` or `--use_reward_model`. Output clamped to [-1, 1]. |
 
-Where:
-- R_format:  Format compliance (Hard constraint, rule check)
-- R_keyword: Keyword inclusion (Hard constraint, rule check)
-- R_relevance: Relevance to news headline (Soft constraint, optional)
-- R_humor:   Humor level (Soft constraint, LLM-as-Judge or Reward Model)
-"""
-import re
+Format short-circuits: if `R_format <= -1.0`, returns early without computing other components.
 
+See `rl/rewards.py` for full implementation. The `build_reward_fn()` factory creates a TRL-compatible closure.
 
-def reward_format(response: str) -> float:
-    """
-    Format compliance check
-    
-    Rules:
-    - Must be non-empty text
-    - Length within reasonable range (e.g., 10-280 characters)
-    - No significant repetition (degeneracy check)
-    """
-    if not response or not response.strip():
-        return -2.0
-    
-    text = response.strip()
-    
-    # Length check
-    if len(text) < 10:
-        return -1.0
-    if len(text) > 280:
-        return -0.5
-    
-    # Repetition check (simple n-gram degeneracy check)
-    words = text.split()
-    if len(words) >= 4:
-        trigrams = [tuple(words[i:i+3]) for i in range(len(words)-2)]
-        unique_ratio = len(set(trigrams)) / len(trigrams)
-        if unique_ratio < 0.5:  # More than half of trigrams are repeated
-            return -1.5
-    
-    return 0.5  # Base reward for format compliance
-
-
-def reward_keyword(response: str, keywords: list[str]) -> float:
-    """
-    Keyword inclusion check
-    
-    +1.0 for each included keyword, extra bonus +0.5 if all included
-    -1.0 if no keyword is included
-    """
-    if not keywords:  # Prompt with no keyword constraints
-        return 0.0
-    
-    text = response.lower()
-    hits = sum(1 for kw in keywords if kw.lower() in text)
-    
-    if hits == 0:
-        return -1.0
-    elif hits == len(keywords):
-        return hits * 1.0 + 0.5  # All hit bonus
-    else:
-        return hits * 1.0 - 0.5  # Partial hit
-
-
-def reward_humor_llm_judge(prompt: str, response: str, 
-                            judge_fn) -> float:
-    """
-    Evaluate humor level using external LLM
-    
-    judge_fn: Function calling external LLM, returning 1-5 score
-    
-    Note: This call is slow and costly, suggestions:
-    - Reduce call frequency in early training (e.g., use LLM judge every N steps)
-    - Or substitute with a trained small reward model
-    """
-    judge_prompt = f"""Rate the following joke on a scale of 1-5 for humor.
-
-Context/Prompt: {prompt}
-Joke: {response}
-
-Scoring criteria:
-1 = Not funny at all, makes no sense
-2 = Slightly amusing but weak
-3 = Moderately funny
-4 = Genuinely funny, clever wordplay or unexpected twist
-5 = Hilarious, extremely witty
-
-Reply with ONLY a single number (1-5)."""
-    
-    try:
-        score_str = judge_fn(judge_prompt).strip()
-        score = int(score_str)
-        score = max(1, min(5, score))
-        # Map 1-5 to [-1, 1] range
-        return (score - 3) / 2.0
-    except:
-        return 0.0  # Neutral score on failure
-
-
-def compute_reward(prompt: str, response: str, 
-                   keywords: list[str] = None,
-                   judge_fn=None) -> float:
-    """
-    Composite Reward Function
-    
-    Weights can be adjusted experimentally
-    """
-    r_format = reward_format(response)
-    r_keyword = reward_keyword(response, keywords or [])
-    
-    # If format is severely non-compliant, return low score directly (short-circuit)
-    if r_format <= -1.0:
-        return r_format
-    
-    r_humor = 0.0
-    if judge_fn is not None:
-        r_humor = reward_humor_llm_judge(prompt, response, judge_fn)
-    
-    # Weighted sum (Weights are hyperparameters, need experimental tuning)
-    total = (
-        1.0 * r_format +    # Format compliance
-        2.0 * r_keyword +    # Keyword inclusion (Higher weight as it's hard constraint)
-        1.5 * r_humor        # Humor level
-    )
-    
-    return total
-```
-
-> **About LLM-as-Judge Cost**: In GRPO training, calling external API for every rollout is costly and slow. Several strategies in practice:
-> 
-> 1. **Train a small Reward Model first** (Recommended): Train a lightweight reward model (can be Qwen3-1.7B + classification head) using rJokes score data, then use it for scoring in GRPO.
-> 2. **Phased Training**: Use rule-based reward (format + keyword) initially, add humor reward after training stabilizes.
-> 3. **Batch Async Calls**: Accumulate a batch of rollouts then call LLM judge asynchronously to reduce API overhead.
-> 
-> **For course projects, Scheme 2 is recommended** — First run through GRPO flow with pure rule reward, then gradually introduce humor scoring after confirming stability.
+> **About LLM-as-Judge Cost**: In GRPO training, calling external API for every rollout is costly and slow. Three strategies are implemented:
+>
+> 1. **Trained Reward Model** (Implemented, `rl/train_reward_model.py`): A lightweight reward model (Qwen3-1.7B + classification head) trained on humor preference pair data with Bradley-Terry loss. Fast, deterministic, and task-specific. Activated via `--use_reward_model`.
+> 2. **Phased Training** (Default): Use rule-based reward (format + keyword + relevance) initially, add humor reward after training stabilizes. Phase 2 activated via `--use_humor_judge` or `--use_reward_model`.
+> 3. **Batch API Calls** (Implemented, `rl/humor_judge.py`): Multiple (prompt, response) pairs packed into a single Gemini API call. Activated via `--use_humor_judge`.
 
 ---
 
@@ -524,149 +237,37 @@ def compute_reward(prompt: str, response: str,
 
 ### 5.2 LoRA Configuration
 
-```python
-from peft import LoraConfig, TaskType
+| Parameter | Value | Rationale |
+|---|---|---|
+| `r` | 64 | ~160M trainable parameters (~2% of 8B total), no VRAM pressure on 80GB |
+| `lora_alpha` | 128 | 2×r convention |
+| `lora_dropout` | 0.0 | No dropout needed at this scale |
+| `target_modules` | q/k/v/o_proj, gate/up/down_proj | Full attention + FFN coverage |
 
-lora_config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM,
-    r=64,                          # LoRA rank, 32-64 recommended for 8B model
-    lora_alpha=128,                # Usually set to 2*r
-    lora_dropout=0.05,
-    target_modules=[               # Attention layers of Qwen3
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj"
-    ],
-    # Note: Do not add "lm_head", fine-tuning attention + FFN is enough for SFT
-)
-```
+> If overfitting occurs, reduce rank to r=32.
 
-> **LoRA rank selection basis**: For 8B model, r=64 produces ~160M trainable parameters (~2% of total), no VRAM pressure on 80GB GPU. If overfitting occurs, reduce to r=32.
+### 5.3 Training Configuration
 
-### 5.3 Training Configuration and Code
+See `sft/train_sft.py` for full implementation.
 
-```python
-"""
-SFT Training Script Skeleton
+| Parameter | Value | Notes |
+|---|---|---|
+| `num_train_epochs` | 1 | Single pass to avoid overfitting on humor patterns |
+| `per_device_train_batch_size` | 8 | |
+| `gradient_accumulation_steps` | 1 | Effective batch = 8 |
+| `learning_rate` | 1e-4 | LoRA LR, higher than full fine-tuning |
+| `lr_scheduler_type` | cosine | |
+| `warmup_ratio` | 0.05 | |
+| `max_seq_length` | 512 | Jokes are short, 512 is enough |
+| `packing` | True | Sequence packing for training efficiency |
+| `bf16` | True | Mixed precision |
+| `gradient_checkpointing` | False | Fits within A100 80GB |
 
-File: sft/train_sft.py
-"""
-import torch
-from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, TaskType, get_peft_model
-from trl import SFTConfig, SFTTrainer
-
-
-def main():
-    # ============================================================
-    # 1. Load Model and Tokenizer
-    # ============================================================
-    model_name = "Qwen/Qwen3-8B"
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-        padding_side="right",        # Padding on right for SFT training
-    )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",           # Single card directly auto
-        trust_remote_code=True,
-        attn_implementation="flash_attention_2",  # Use FlashAttention 2
-    )
-
-    # ============================================================
-    # 2. LoRA Configuration
-    # ============================================================
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=64,
-        lora_alpha=128,
-        lora_dropout=0.05,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
-    )
-
-    # ============================================================
-    # 3. Load Dataset
-    # ============================================================
-    # Dataset should be JSON/JSONL format, each containing "messages" field
-    # Example: {"messages": [{"role": "user", "content": "..."}, 
-    #                        {"role": "assistant", "content": "..."}]}
-    dataset = load_dataset(
-        "json",
-        data_files={
-            "train": "data/sft/preprocessed/sft_train.jsonl",
-            "validation": "data/sft/preprocessed/sft_val.jsonl",
-        }
-    )
-
-    # ============================================================
-    # 4. Training Configuration
-    # ============================================================
-    training_args = SFTConfig(
-        output_dir="checkpoints/sft",
-        
-        # --- Training Hyperparams ---
-        num_train_epochs=3,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
-        gradient_accumulation_steps=4,    # Effective batch_size = 4 * 4 = 16
-        learning_rate=2e-4,               # LoRA LR usually higher than full fine-tuning
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
-        
-        # --- Precision ---
-        bf16=True,
-        
-        # --- Sequence Length ---
-        max_seq_length=512,               # Jokes usually short, 512 is enough
-        
-        # --- Logging and Saving ---
-        logging_steps=10,
-        eval_strategy="steps",
-        eval_steps=100,
-        save_strategy="steps",
-        save_steps=100,
-        save_total_limit=3,
-        
-        # --- Others ---
-        report_to="wandb",               # or "tensorboard"
-        seed=42,
-        
-        # --- PEFT ---
-        peft_config=lora_config,          # TRL >= 0.18 pass LoRA config directly
-    )
-
-    # ============================================================
-    # 5. Create Trainer and Train
-    # ============================================================
-    trainer = SFTTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset["train"],
-        eval_dataset=dataset["validation"],
-        processing_class=tokenizer,
-    )
-
-    trainer.train()
-    
-    # Save final model (Only saves LoRA adapter weights)
-    trainer.save_model("checkpoints/sft/final")
-    tokenizer.save_pretrained("checkpoints/sft/final")
-
-
-if __name__ == "__main__":
-    main()
-```
+TRL `SFTTrainer` with `peft_config` parameter handles LoRA integration directly (TRL >= 0.29).
 
 ### 5.4 Key Notes for SFT Stage
 
-1. **Qwen3 Thinking Mode**: Qwen3 defaults to "thinking" mode (generates thinking process in `<think>...</think>` tags). For humor generation tasks, it is recommended to **disable thinking mode** during inference (specify `/no_think` in system prompt, or configure in generation parameters). Assistant responses in SFT data should not contain thinking tags.
+1. **Qwen3 Thinking Mode**: Qwen3 defaults to "thinking" mode (generates `<think>...</think>` tags). For humor generation, **disable thinking mode** by using `/no_think` in the system prompt and setting `enable_thinking=False` in generation parameters. SFT data should not contain thinking tags.
 
 2. **Multilingual Mixed Training**: Train English/Chinese/Spanish SFT data mixed together (not separately). Qwen3 itself has strong multilingual capabilities, mixed training can mutually benefit.
 
@@ -699,207 +300,47 @@ See detailed design in [Section 4.2.2](#422-reward-function-design-core).
 
 **Phased Training Strategy (Recommended)**:
 
-| Phase | Reward Composition | Training Steps | Goal |
+| Phase | Reward Composition | Activation | Goal |
 |---|---|---|---|
-| Phase 1 | `R_format + R_keyword` (Pure Rules) | ~200-500 steps | Learn to satisfy hard constraints |
-| Phase 2 | `R_format + R_keyword + R_humor` (Rule+LLM) | ~300-800 steps | Improve humor quality while satisfying constraints |
+| Phase 1 | `R_format + R_keyword + R_relevance` (Rule-based) | Default | Learn hard constraints + basic headline grounding |
+| Phase 2 | `R_format + R_keyword + R_relevance + R_humor` (Rule+Scorer) | `--use_humor_judge` or `--use_reward_model` | Improve humor quality via external scorer |
 
-> The benefit of this phased strategy is: Run through the flow and tune hyperparameters with cheap rule rewards first, then introduce expensive LLM judge. Avoid burning money on tuning at the start.
+> Phase 2 is fully implemented with two backends: Gemini LLM-as-Judge (`--use_humor_judge`) and trained reward model (`--use_reward_model`). The reward model approach is preferred for speed and determinism.
 
-### 6.3 Training Configuration and Code
+### 6.3 Training Configuration
 
-```python
-"""
-GRPO Training Script Skeleton
+See `rl/train_grpo.py` for full implementation.
 
-File: rl/train_grpo.py
+**Model Loading**: Currently loads base Qwen3-8B directly (SFT merge is disabled on the `grpo_without_sft` branch). GRPOTrainer applies a new LoRA (r=32) and creates the reference model internally.
 
-TRL's GRPOTrainer encapsulates GRPO core logic:
-- Automatically handles group sampling (generate G responses per prompt)
-- Automatically computes group-relative advantage
-- Automatically handles KL divergence constraints
-- Supports custom reward functions
-"""
-import torch
-from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, TaskType
-from trl import GRPOConfig, GRPOTrainer
+**Key Hyperparameters (A100 80GB)**:
 
+| Parameter | Value | Rationale |
+|---|---|---|
+| `num_generations` (G) | 16 | Group size for advantage estimation |
+| `per_device_train_batch_size` | 8 | 8 prompts × 16 generations = 128 completions/step |
+| `gradient_accumulation_steps` | 2 | Effective batch = 16 prompts |
+| `num_train_epochs` | 2 | Two passes over the prompt dataset |
+| `learning_rate` | 5e-6 | ~40× smaller than SFT; RL needs cautious updates |
+| `beta` (KL coeff) | 0.04 | Prevents policy from deviating too far from reference |
+| `loss_type` | "grpo" | Classic GRPO (not DAPO default) |
+| `temperature` | 0.9 | Diversity for meaningful group advantages |
+| `max_completion_length` | 256 | Jokes are short |
+| `gradient_checkpointing` | False | Fits within A100 80GB |
+| GRPO LoRA rank | 32 | Smaller than SFT (64); fine-grained steering |
+| `chat_template_kwargs` | `{"enable_thinking": False}` | Disable Qwen3 thinking mode |
 
-# ============================================================
-# 1. Reward Function (Core component passed to GRPOTrainer)
-# ============================================================
-def reward_fn(completions: list[str], prompts: list[str] = None, 
-              **kwargs) -> list[float]:
-    """
-    Reward function signature required by GRPOTrainer:
-    - completions: List of generated responses
-    - prompts: List of corresponding prompts (Supported in TRL >= 0.18)
-    
-    Returns: List of floats same length as completions
-    
-    Note: GRPOTrainer combines prompt and completion internally before passing,
-    check documentation for specific signature of your installed TRL version.
-    """
-    rewards = []
-    for i, completion in enumerate(completions):
-        prompt = prompts[i] if prompts else ""
-        
-        # Extract keywords from prompt (if any)
-        keywords = extract_keywords_from_prompt(prompt)
-        
-        # Compute composite reward
-        r = compute_reward(
-            prompt=prompt,
-            response=completion,
-            keywords=keywords,
-            judge_fn=None,  # Phase 1: No LLM judge
-        )
-        rewards.append(r)
-    
-    return rewards
-
-
-def extract_keywords_from_prompt(prompt: str) -> list[str]:
-    """Extract keyword constraints from prompt text"""
-    import re
-    # Match "Required words: word1, word2" format
-    match = re.search(r"Required words?:\s*(.+?)(?:\n|$)", prompt, re.IGNORECASE)
-    if not match:
-        # Try matching Chinese format
-        match = re.search(r"必须包含的词语[：:]\s*(.+?)(?:\n|$)", prompt)
-    if not match:
-        return []
-    
-    words_str = match.group(1).strip()
-    # Split by comma or enumeration comma
-    keywords = re.split(r"[,，、]", words_str)
-    return [kw.strip() for kw in keywords if kw.strip()]
-
-
-# ============================================================
-# 2. Main Training Flow
-# ============================================================
-def main():
-    # --- Load Model Trained in SFT Stage ---
-    # Method: Load base model + merge SFT LoRA adapter
-    base_model_name = "Qwen/Qwen3-8B"
-    sft_adapter_path = "checkpoints/sft/final"
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        base_model_name,
-        trust_remote_code=True,
-        padding_side="left",          # Left padding needed for GRPO generation
-    )
-    # Ensure pad_token exists
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-        attn_implementation="flash_attention_2",
-    )
-    
-    # Load and merge SFT adapter -> As initial policy and reference model for GRPO
-    # Note: TRL GRPOTrainer automatically handles reference model
-    # You can choose:
-    #   A) Merge SFT adapter to base, then wrap a new LoRA for GRPO
-    #   B) Pass SFT adapter path directly, let GRPOTrainer handle
-    # Showing Scheme A here (Clearer):
-    from peft import PeftModel
-    model = PeftModel.from_pretrained(model, sft_adapter_path)
-    model = model.merge_and_unload()  # Merge LoRA to base weights
-
-    # New LoRA config for GRPO stage (Can use smaller rank)
-    grpo_lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=32,
-        lora_alpha=64,
-        lora_dropout=0.05,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
-    )
-
-    # --- Load GRPO Training Prompts ---
-    # Dataset only needs "prompt" field
-    # Format: {"prompt": [{"role": "user", "content": "..."}]}
-    dataset = load_dataset(
-        "json",
-        data_files="data/grpo/grpo_prompts.jsonl",
-        split="train"
-    )
-
-    # --- GRPO Training Configuration ---
-    grpo_config = GRPOConfig(
-        output_dir="checkpoints/grpo",
-        
-        # --- GRPO Core Hyperparams ---
-        num_generations=8,            # G: Number of responses per prompt
-        max_completion_length=256,    # Max generation length
-        
-        # --- Training Hyperparams ---
-        num_train_epochs=1,           # GRPO usually runs 1-2 epochs
-        per_device_train_batch_size=1,# GRPO batch_size usually small
-                                       # (because each sample generates G items)
-        gradient_accumulation_steps=8,# Effective batch = 1 * 8 = 8 prompts
-        learning_rate=5e-6,           # RL stage LR much smaller than SFT
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
-        
-        # --- KL Divergence Constraint ---
-        beta=0.04,                    # KL penalty coefficient, prevents deviating too far from SFT policy
-                                       # Too large → Policy doesn't update; Too small → Reward hacking
-        
-        # --- Precision ---
-        bf16=True,
-        
-        # --- Logging and Saving ---
-        logging_steps=5,
-        save_strategy="steps",
-        save_steps=50,
-        save_total_limit=5,
-        report_to="wandb",
-        seed=42,
-        
-        # --- PEFT ---
-        peft_config=grpo_lora_config,
-    )
-
-    # --- Create Trainer and Train ---
-    trainer = GRPOTrainer(
-        model=model,
-        args=grpo_config,
-        train_dataset=dataset,
-        processing_class=tokenizer,
-        reward_funcs=reward_fn,       # Custom reward function
-    )
-
-    trainer.train()
-    
-    # Save
-    trainer.save_model("checkpoints/grpo/final")
-    tokenizer.save_pretrained("checkpoints/grpo/final")
-
-
-if __name__ == "__main__":
-    main()
-```
+**Monitoring** (`RewardStatsRecorder` + `LoggingGRPOTrainer`): Per-component reward statistics (format, keyword, relevance, humor) are logged at each training step via wandb/tensorboard.
 
 ### 6.4 GRPO Training Key Hyperparameters and Tuning Guide
 
 | Hyperparameter | Suggested Range | Description |
 |---|---|---|
-| `num_generations` (G) | 4 - 16 | Group size. Larger reduces variance but linearly increases VRAM/time. **Start with 8** |
-| `beta` (KL coeff) | 0.01 - 0.1 | Core hyperparam. Too large prevents policy update; too small causes reward hacking. **Start with 0.04** |
-| `learning_rate` | 1e-6 - 1e-5 | RL stage 1-2 orders of magnitude smaller than SFT. **Suggest 5e-6** |
-| `per_device_train_batch_size` | 1 - 2 | Actual throughput = batch × G. Set small to prevent OOM |
-| `gradient_accumulation_steps` | 4 - 16 | Increase effective batch via accumulation for stability |
+| `num_generations` (G) | 4 - 16 | Group size. Larger reduces variance but linearly increases VRAM/time. **Default 16** |
+| `beta` (KL coeff) | 0.01 - 0.1 | Core hyperparam. Too large prevents policy update; too small causes reward hacking. **Default 0.04** |
+| `learning_rate` | 1e-6 - 1e-5 | RL stage 1-2 orders of magnitude smaller than SFT. **Default 5e-6** |
+| `per_device_train_batch_size` | 1 - 8 | Actual throughput = batch × G. **Default 8** (fits A100 80GB) |
+| `gradient_accumulation_steps` | 1 - 8 | Increase effective batch via accumulation for stability. **Default 2** |
 | `max_completion_length` | 128 - 512 | Jokes are short, 256 usually enough |
 | `temperature` (Generation) | 0.7 - 1.0 | GRPO needs diversity, don't set too low. **Suggest 0.9** |
 
@@ -921,309 +362,139 @@ Monitor these metrics (via wandb/tensorboard):
 
 ### 7.1 Rejection Sampling
 
-After training, use rejection sampling during inference to guarantee constraint satisfaction:
+After training, use rejection sampling during inference to guarantee constraint satisfaction. See `rl/inference.py` for full implementation.
 
-```python
-"""
-Rejection Sampling during Inference
+**Strategy**: Bounded retry with up to 3 rounds of generation (16 candidates per round, accumulating up to 48 total). Each round checks hard constraints (keyword inclusion). If valid candidates are found, the best is selected by composite reward score. If no valid candidate after 3 rounds, a best-effort fallback is returned.
 
-File: rl/inference.py
-"""
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
-
-
-def load_model(base_model_path: str, adapter_path: str):
-    """Load GRPO trained model"""
-    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_path,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-    )
-    # Load GRPO adapter
-    # Note: If GRPO was trained on SFT-merged model,
-    # Need to merge SFT adapter first then load GRPO adapter
-    model = PeftModel.from_pretrained(model, adapter_path)
-    model.eval()
-    return model, tokenizer
-
-
-def generate_candidates(model, tokenizer, prompt: str, 
-                         n_candidates: int = 16,
-                         max_new_tokens: int = 256,
-                         temperature: float = 0.9,
-                         top_p: float = 0.95) -> list[str]:
-    """Generate N candidate responses for a single prompt"""
-    messages = [{"role": "user", "content": prompt}]
-    
-    # Use Qwen3 chat template
-    text = tokenizer.apply_chat_template(
-        messages, 
-        tokenize=False, 
-        add_generation_prompt=True,
-        enable_thinking=False,  # Disable thinking mode
-    )
-    
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        do_sample=True,
-        num_return_sequences=n_candidates,  # Generate N at once
-    )
-    
-    # Decode (Remove prompt part)
-    prompt_len = inputs["input_ids"].shape[1]
-    candidates = []
-    for seq in outputs:
-        text = tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
-        candidates.append(text.strip())
-    
-    return candidates
-
-
-def rejection_sample(model, tokenizer, prompt: str,
-                      keywords: list[str] = None,
-                      n_candidates: int = 16,
-                      humor_scorer=None) -> dict:
-    """
-    Rejection Sampling Inference Flow
-    
-    Returns: {
-        "best_response": str,
-        "all_candidates": list[str],
-        "constraint_pass_rate": float,
-        "scores": list[float]
-    }
-    """
-    # Step 1: Generate candidates
-    candidates = generate_candidates(model, tokenizer, prompt, n_candidates)
-    
-    # Step 2: Hard constraint filter
-    if keywords:
-        valid_candidates = []
-        for c in candidates:
-            c_lower = c.lower()
-            if all(kw.lower() in c_lower for kw in keywords):
-                valid_candidates.append(c)
-    else:
-        valid_candidates = candidates.copy()
-    
-    constraint_pass_rate = len(valid_candidates) / len(candidates)
-    
-    # Step 3: Fallback if no candidate passes hard constraints
-    if not valid_candidates:
-        # Fallback: Pick candidate with most keywords
-        if keywords:
-            best = max(candidates, 
-                      key=lambda c: sum(kw.lower() in c.lower() for kw in keywords))
-        else:
-            best = candidates[0]
-        return {
-            "best_response": best,
-            "all_candidates": candidates,
-            "constraint_pass_rate": 0.0,
-            "scores": [],
-        }
-    
-    # Step 4: Soft constraint ranking (Humor score)
-    if humor_scorer:
-        scored = [(c, humor_scorer(prompt, c)) for c in valid_candidates]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        best = scored[0][0]
-        scores = [s for _, s in scored]
-    else:
-        # Pick random valid candidate if no scorer
-        best = valid_candidates[0]
-        scores = []
-    
-    return {
-        "best_response": best,
-        "all_candidates": candidates,
-        "constraint_pass_rate": constraint_pass_rate,
-        "scores": scores,
-    }
-
-
-# === Usage Example ===
-if __name__ == "__main__":
-    model, tokenizer = load_model(
-        base_model_path="Qwen/Qwen3-8B",
-        adapter_path="checkpoints/grpo/final"
-    )
-    
-    prompt = (
-        "You are a witty comedian. Given the following news headline, "
-        "write a short, funny one-liner joke inspired by it.\n\n"
-        "Headline: \"Tech Giants Face New Regulations on AI Safety\"\n"
-        "Required words: penguin, bankruptcy\n\n"
-        "Write a humorous one-liner that includes both required words."
-    )
-    
-    result = rejection_sample(
-        model, tokenizer, prompt,
-        keywords=["penguin", "bankruptcy"],
-        n_candidates=16,
-    )
-    
-    print(f"Best response: {result['best_response']}")
-    print(f"Constraint pass rate: {result['constraint_pass_rate']:.2%}")
-    print(f"Total candidates: {len(result['all_candidates'])}")
-```
+- **Hard constraint (filter)**: Keyword inclusion only
+- **Soft constraint (ranking)**: Composite reward score (includes headline relevance)
 
 ### 7.2 Accelerate Inference with vLLM (Optional)
 
-Using vLLM significantly speeds up inference when rejection sampling is needed for many prompts:
-
-```python
-"""
-Batch Inference with vLLM (5-10x faster than HuggingFace generate)
-Note: vLLM LoRA adapter support requires vLLM >= 0.4.0
-"""
-from vllm import LLM, SamplingParams
-from vllm.lora.request import LoRARequest
-
-# Load Model (vLLM way)
-llm = LLM(
-    model="Qwen/Qwen3-8B",
-    enable_lora=True,
-    max_lora_rank=64,
-    dtype="bfloat16",
-    gpu_memory_utilization=0.85,
-)
-
-# Configure Sampling Params
-sampling_params = SamplingParams(
-    temperature=0.9,
-    top_p=0.95,
-    max_tokens=256,
-    n=16,  # Generate 16 candidates per prompt
-)
-
-# Prepare LoRA adapter
-lora_request = LoRARequest("grpo_adapter", 1, "checkpoints/grpo/final")
-
-# Batch Inference
-prompts = [...]  # List of prompts
-outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
-```
+Using vLLM significantly speeds up inference when rejection sampling is needed for many prompts. vLLM supports LoRA adapter loading (>= 0.4.0) and batch generation with `n=16` candidates per prompt in a single call.
 
 ---
 
 ## 8. Evaluation Scheme
 
-### 8.1 Automated Metrics (Tier 1 — No Model Required)
+评估系统是一个六阶段的统一 pipeline（`evaluation/pipeline.py`），各阶段可独立运行也可按顺序串联执行。评估对象为三个模型变体：Base（零样本基线）、SFT、GRPO，在评估集（`data/grpo/grpo_prompts_eval.jsonl`）上分别生成输出后进行对比。
 
-| Metric | Applicable Subtask | Calculation Method |
-|---|---|---|
-| Constraint Satisfaction Rate | Keyword Subtask | Whether both keywords appear (Exact/Fuzzy match) |
-| Format Compliance | All | Single sentence/Length/Non-empty check |
-| Degeneracy Rate | All | Percentage of repeated n-grams |
-| Distinct-1 / Distinct-2 | All | Unigram/Bigram diversity of generated text |
+### 8.1 Pipeline Overview
 
-### 8.2 LLM-as-Judge (Tier 2)
-
-```python
-"""
-LLM-as-Judge Pairwise Evaluation
-
-Compare baseline (Zero-shot base) vs proposed (Trained model) outputs for each prompt
-"""
-
-JUDGE_PROMPT_TEMPLATE = """You are an expert judge of humor quality.
-
-Given the following news headline and two joke responses (A and B), determine which joke is funnier.
-
-Headline: "{headline}"
-{keyword_section}
-
-Response A: "{response_a}"
-Response B: "{response_b}"
-
-Consider:
-1. Is the joke genuinely funny (not just random or nonsensical)?
-2. Does it relate to the headline?
-3. Is it a single, well-formed sentence?
-{keyword_criteria}
-
-Which response is funnier? Reply with ONLY "A" or "B" or "TIE".
-"""
+```
+评估提示词
+    ↓
+[Stage 1] benchmark — lm-eval 通用能力基准测试（MMLU 等）
+    ↓
+[Stage 2] generate  — 三个模型分别生成输出（rejection sampling）
+    ↓
+    ├→ [Stage 3] auto_metrics — 自动化指标计算
+    ├→ [Stage 4] llm_judge   — LLM 裁判成对比较
+    └→ [Stage 5] human_eval  — 导出盲评样本供人工评估
+                    ↓
+           [Stage 6] report — 汇总所有结果生成 Markdown 报告
 ```
 
-### 8.3 Human Evaluation (Tier 3)
+### 8.2 General Capability Benchmark
 
-- Randomly sample 20-40 prompts from test set
-- 2-3 evaluators perform blind A/B testing independently
-- Report agreement with LLM judge (Cohen's kappa)
+使用 `lm-evaluation-harness` 在标准化基准（默认 MMLU）上测试三个模型变体，确保 SFT 和 GRPO 训练未显著损害通用语言能力。输出包含各子任务得分以及模型间差异（top-K 改善 / 退化子任务）。
+
+### 8.3 Output Generation with Rejection Sampling
+
+对每条评估提示词，每个模型生成 N=16 个候选（采样模式），经关键词硬约束过滤后，使用 `rl/rewards.py` 中的复合奖励函数对剩余候选打分并选取最优。记录每条提示词的最佳回复、全部候选、约束通过率和最佳得分，作为后续评估阶段的输入。
+
+### 8.4 Automated Metrics (Tier 1)
+
+规则化指标，无需模型推理，全量计算并按语言分组（en / zh / es）：
+
+| Metric | Description |
+|---|---|
+| Format Compliance | 长度在 [10, 280] 字符且 trigram 唯一率 ≥ 0.5 的回复占比 |
+| Degeneracy Rate | trigram 唯一率 < 0.5 的回复占比（重复退化检测） |
+| Distinct-1 / Distinct-2 | 全评估集上的 unigram / bigram 多样性 |
+| Keyword Satisfaction | 含关键词约束的提示词中，所有关键词均出现的回复占比 |
+| Length Statistics | 平均 / 中位数 / 最小 / 最大字符数 |
+
+### 8.5 LLM-as-Judge Pairwise Comparison (Tier 2)
+
+使用 Gemini（`gemini-3-flash-preview`）作为裁判，对模型对（默认 base:grpo、sft:grpo、base:sft）进行成对幽默质量比较。
+
+**评判标准**：幽默质量、与标题的相关性、句子完整性。裁判对每对回复给出 A / B / TIE 判定。
+
+**位置偏差消除**：每对回复进行两轮判定（A/B 位置互换），仅两轮结论一致时计为有效胜出，不一致记为 TIE，并跟踪一致率（consistency rate）。
+
+**输出指标**：每个模型对的胜率、平局率、一致率。
+
+### 8.6 Human Evaluation (Tier 3)
+
+从评估集中按语言分层采样（默认 36 条），随机分配两个模型的回复到 A/B 列（盲评），导出 CSV 供人工评估者填写判定（A / B / TIE）。答案密钥（JSON）单独保存用于解码。
+
+**工作流**：导出盲评 CSV → 评估者独立填写 → 回收 CSV → 报告阶段自动解码计算胜率。
+
+### 8.7 Report Aggregation
+
+汇总以上所有已完成阶段的结果，生成一份 Markdown 评估报告（`evaluation/results/evaluation_report.md`）。支持增量生成：如人工评估尚未完成，报告中显示占位提示，后续可重新生成以纳入新结果。
 
 ---
 
-## 9. Project Directory Structure (Proposed)
+## 9. Project Directory Structure
 
 ```
 proj_2026_1/
-├── configs/                        # Training Configs
-│   ├── sft_config.yaml
-│   └── grpo_config.yaml
-│
 ├── data/
-│   ├── semeval_task/               # SemEval Raw Data (Existing)
-│   │   ├── task-a-en.tsv
-│   │   ├── task-a-es.tsv
-│   │   └── task-a-zh.tsv
-│   ├── sft/
-│   │   ├── raw/                    # Raw Datasets (Existing)
-│   │   │   ├── rjoke/
-│   │   │   ├── cfun/
-│   │   │   ├── haha/
-│   │   │   └── news_headlines.../
-│   │   └── preprocessed/           # Processed SFT Data
-│   │       ├── sft_train.jsonl
-│   │       └── sft_val.jsonl
-│   └── grpo/
-│       └── grpo_prompts.jsonl      # GRPO Training Prompts
+│   ├── raw/                        # Raw Datasets
+│   ├── preprocessed/               # Unified Intermediate Format
+│   │   ├── unified_all.jsonl       # All humor data
+│   │   └── semeval.jsonl           # SemEval data
+│   ├── synthesized/                # Synthesized data (Gemini API)
+│   ├── sft/                        # SFT Training Data
+│   │   ├── sft_train.jsonl
+│   │   └── sft_val.jsonl
+│   ├── grpo/                       # GRPO Prompt Data
+│   │   ├── grpo_prompts_train.jsonl
+│   │   └── grpo_prompts_eval.jsonl
+│   └── reward/                     # Reward Preference Pairs
+│       ├── preference_train.jsonl
+│       └── preference_val.jsonl
 │
 ├── data_preprocessing/
-│   ├── visulization.ipynb          # Data Visualization (Existing)
-│   ├── prepare_sft_data.py         # SFT Data Prep Script
-│   ├── prepare_grpo_prompts.py     # GRPO Prompt Prep Script
-│   └── synthesize_task_data.py     # Task Formatted Data Synthesis Script
+│   ├── config.py                   # Centralized configuration for all pipeline stages
+│   ├── parsers.py                  # Raw data parsers
+│   ├── formatters.py               # SFT / GRPO / Reward data formatters
+│   ├── pipeline.py                 # CLI entry point for data pipeline
+│   ├── prompt_templates.py         # Prompt template definitions
+│   ├── synthesize_task_data.py     # Type B task data synthesis (Gemini)
+│   └── synthesize_reward_data.py   # Reward hard-negative synthesis (Gemini)
 │
 ├── sft/
-│   ├── train_sft.py                # SFT Training Entry
-│   └── eval_sft.py                 # SFT Evaluation Entry
+│   └── train_sft.py                # SFT Training Entry
 │
 ├── rl/
-│   ├── rewards.py                  # Reward Function Definition
-│   ├── train_grpo.py               # GRPO Training Entry
-│   └── inference.py                # Inference + Rejection Sampling
-│
-├── src/
-│   ├── __init__.py
-│   ├── data_utils.py               # Data Loading/Processing Utils
-│   └── eval_utils.py               # Evaluation Utils
+│   ├── rewards.py                  # Reward functions + RewardStatsRecorder
+│   ├── train_grpo.py               # GRPO training + LoggingGRPOTrainer
+│   ├── inference.py                # Inference + Rejection Sampling
+│   ├── train_reward_model.py       # Reward model training (Bradley-Terry)
+│   ├── reward_model.py             # Reward model inference scorers
+│   └── humor_judge.py              # Gemini LLM-as-Judge scorer
 │
 ├── evaluation/
-│   ├── run_auto_eval.py            # Automated Metrics Eval
-│   ├── run_llm_judge.py            # LLM-as-Judge Eval
-│   └── analyze_results.py          # Results Analysis & Viz
+│   ├── pipeline.py                 # Unified evaluation pipeline
+│   ├── generate_outputs.py         # Generate model outputs for eval
+│   ├── eval_auto_metrics.py        # Automated metrics
+│   ├── eval_llm_judge.py           # LLM-as-Judge evaluation
+│   ├── export_human_eval.py        # Human evaluation export
+│   ├── benchmark_compare.py        # Cross-model comparison
+│   └── generate_report.py          # Report generation
 │
-├── checkpoints/                    # Model Checkpoints (Existing)
+├── checkpoints/                    # Model Checkpoints
 │   ├── sft/
-│   └── grpo/
+│   ├── grpo/
+│   └── reward_model/
 │
-├── utils/                          # Common Utils (Existing)
+├── utils/                          # Common Utils
 │
 ├── Dockerfile
-├── docker_build.sh
-├── docker_run.sh
-├── requirements.txt
+├── pyproject.toml
 ├── TECHNICAL_ROADMAP.md            # This Document
 └── .gitignore
 ```
@@ -1338,8 +609,8 @@ $\beta$ controls the strength of KL penalty:
 
 **GRPO stage is more prone to OOM than SFT** because it processes a group of responses simultaneously. Tuning order:
 
-1. Decrease `num_generations` (e.g., 8 → 4)
-2. Decrease `per_device_train_batch_size` (e.g., 2 → 1)
+1. Decrease `num_generations` (e.g., 16 → 8)
+2. Decrease `per_device_train_batch_size` (e.g., 8 → 4)
 3. Increase `gradient_accumulation_steps` to compensate
 4. Decrease `max_completion_length`
 5. Enable gradient checkpointing (`gradient_checkpointing=True`)
@@ -1349,20 +620,7 @@ $\beta$ controls the strength of KL penalty:
 
 Qwen3 thinking mode generates `<think>...</think>` tags in response. For humor generation, **must disable**:
 
-```python
-# Method 1: Disable in chat template
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=False,   # Disable thinking mode
-)
-
-# Method 2: Specify in system prompt
-messages = [
-    {"role": "system", "content": "/no_think"},
-    {"role": "user", "content": "your prompt here"},
-]
-```
+- **Chat template**: Set `enable_thinking=False` in `tokenizer.apply_chat_template()`
+- **System prompt**: Add `/no_think` as the system message content
 
 In SFT data and GRPO prompt construction, **uniformly use `/no_think` system prompt** to maintain consistency.

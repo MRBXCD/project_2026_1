@@ -8,31 +8,34 @@ This document describes the design and implementation of the Reinforcement Learn
 
 ```
 rl/
-├── __init__.py          # Exports: build_reward_fn, compute_reward, reward_relevance
-├── rewards.py           # Reward function definitions (577 lines)
-├── train_grpo.py        # GRPO training script (520 lines)
-├── inference.py         # Inference + rejection sampling (606 lines)
-└── RL_DESIGN.md         # This document
+├── __init__.py              # Exports: build_reward_fn, compute_reward, reward_relevance
+├── rewards.py               # Reward function definitions + RewardStatsRecorder
+├── train_grpo.py            # GRPO training script + LoggingGRPOTrainer
+├── inference.py             # Inference + rejection sampling
+├── train_reward_model.py    # Reward model training (Qwen3-1.7B, Bradley-Terry loss)
+├── reward_model.py          # Reward model inference scorers
+├── humor_judge.py           # Gemini LLM-as-Judge humor scorer
+├── sample_reward_model.ipynb # Reward model usage examples
+└── RL_DESIGN.md             # This document
 ```
 
 ## Training Pipeline
 
 ```
-SFT Checkpoint (checkpoints/sft/final)
+Base Model (Qwen3-8B)
         │
         ▼
 ┌─────────────────────────────────┐
 │     Load Base Model (Qwen3-8B)  │
-│     + Merge SFT LoRA Adapter    │
-│     → Plain model with SFT      │
-│       knowledge baked in         │
+│     (SFT merge disabled on      │
+│      grpo_without_sft branch)   │
 └───────────────┬─────────────────┘
                 │
                 ▼
 ┌─────────────────────────────────┐
 │     Apply New LoRA (r=32)       │
 │     for GRPO Training           │
-│     Reference = SFT-merged model│
+│     Reference = Base model      │
 │     Policy = New LoRA weights   │
 └───────────────┬─────────────────┘
                 │
@@ -41,7 +44,7 @@ SFT Checkpoint (checkpoints/sft/final)
 │                  GRPO Training Loop                      │
 │                                                          │
 │   For each batch of prompts:                             │
-│   1. Generate G=8 completions per prompt (sampling)      │
+│   1. Generate G=16 completions per prompt (sampling)     │
 │   2. Score all completions with reward function:         │
 │      R = W_format * R_format                             │
 │        + W_keyword * R_keyword                           │
@@ -135,17 +138,17 @@ Weight is intentionally low (0.5) because word overlap is a noisy proxy for sema
 
 ### Sub-reward 4: Humor Quality (`reward_humor`)
 
-Phase 1: always returns 0.0 (placeholder).
+Phase 1: always returns 0.0 (no humor scorer provided).
 
-Phase 2 interface (to be implemented):
-- Accepts a `scorer(prompt, response) -> float` callable
-- Scorer can be LLM-as-Judge (API call) or trained Reward Model
+Phase 2 (implemented): Two scorer backends available:
+- **Gemini LLM-as-Judge** (`humor_judge.py`): Batch API calls to `gemini-3-flash-preview`, scores 1-5 mapped to [-1, 1] via `(score-1)/4*2-1`. Enabled via `--use_humor_judge`.
+- **Trained Reward Model** (`reward_model.py`): On-device forward pass through Qwen3-1.7B reward model, tanh-normalized to [-1, 1]. Enabled via `--use_reward_model`.
 - Output clamped to [-1.0, 1.0]
 - Exception-safe: returns 0.0 on any scorer failure
 
 ### GRPOTrainer Integration (`build_reward_fn`)
 
-The `build_reward_fn(humor_scorer=None)` factory function returns a closure compatible with TRL GRPOTrainer v0.27.1:
+The `build_reward_fn(humor_scorer=None, batch_humor_scorer=None, stats_recorder=None)` factory function returns a closure compatible with TRL GRPOTrainer v0.27.1:
 
 ```python
 reward_fn(prompts, completions, keywords, headline, **kwargs) -> list[float]
@@ -153,29 +156,31 @@ reward_fn(prompts, completions, keywords, headline, **kwargs) -> list[float]
 
 - `prompts[i]` / `completions[i]`: conversational format `[{"role": "...", "content": "..."}]`
 - `keywords[i]` / `headline[i]`: from dataset columns, auto-passed by GRPOTrainer via `**kwargs`
-- Closure captures `humor_scorer` for Phase 2 extensibility
+- `stats_recorder`: optional `RewardStatsRecorder` for per-component logging
+- Closure captures `humor_scorer` / `batch_humor_scorer` for Phase 2 scoring
 
 ## GRPO Training Script (train_grpo.py)
 
-### Model Loading: "Merge then Re-LoRA"
+### Model Loading: Base Model + LoRA
 
 1. Load base Qwen3-8B (bf16, flash_attention_2)
-2. Load SFT LoRA adapter → `merge_and_unload()` → plain model
+2. ~~Load SFT LoRA adapter → `merge_and_unload()`~~ (disabled on `grpo_without_sft` branch; SFT merge code is commented out in `train_grpo.py:186-194`)
 3. GRPOTrainer applies new LoRA (r=32) and creates reference model internally
 
 ### Key Hyperparameters (A100 80GB)
 
 | Parameter | Value | Rationale |
 |---|---|---|
-| `num_generations` | 8 | Group size for advantage estimation |
-| `per_device_train_batch_size` | 2 | 2 prompts x 8 generations = 16 completions/step |
-| `gradient_accumulation_steps` | 4 | Effective batch = 8 prompts |
+| `num_generations` | 16 | Group size for advantage estimation |
+| `per_device_train_batch_size` | 8 | 8 prompts x 16 generations = 128 completions/step |
+| `gradient_accumulation_steps` | 2 | Effective batch = 8 x 2 = 16 prompts |
+| `num_train_epochs` | 2 | Two passes over the prompt dataset |
 | `learning_rate` | 5e-6 | 40x smaller than SFT (2e-4); RL needs cautious updates |
 | `beta` | 0.04 | KL penalty; prevents reward hacking |
 | `loss_type` | "grpo" | Classic GRPO (not DAPO default) |
 | `temperature` | 0.9 | Diversity for meaningful group advantages |
 | `max_completion_length` | 256 | Jokes are short |
-| `gradient_checkpointing` | True | GRPO has higher VRAM pressure than SFT |
+| `gradient_checkpointing` | False | Fits within A100 80GB without checkpointing |
 | `chat_template_kwargs` | `{"enable_thinking": False}` | Disable Qwen3 thinking mode |
 | GRPO LoRA rank | 32 | Smaller than SFT (64); fine-grained steering |
 
@@ -210,9 +215,15 @@ Soft constraint (ranking): composite reward score (includes headline relevance).
 ### CLI Usage
 
 ```bash
-# GRPO training
+# GRPO training — Phase 1 (rule-based reward only)
 python -m rl.train_grpo
-python -m rl.train_grpo --beta 0.04 --lr 5e-6 --num_generations 8
+python -m rl.train_grpo --beta 0.04 --lr 5e-6 --num_generations 16
+
+# GRPO training — Phase 2 with Gemini LLM-as-Judge
+python -m rl.train_grpo --use_humor_judge
+
+# GRPO training — Phase 2 with trained Reward Model
+python -m rl.train_grpo --use_reward_model
 
 # Single prompt inference
 python -m rl.inference \
@@ -229,15 +240,46 @@ python -m rl.inference \
 
 ## Phased Training Strategy
 
-| Phase | Reward Components | Goal |
-|---|---|---|
-| Phase 1 (current) | format + keyword + relevance | Learn hard constraints + basic headline grounding |
-| Phase 2 (future) | format + keyword + relevance + humor | Improve joke quality via LLM-as-Judge or Reward Model |
+| Phase | Reward Components | Activation | Goal |
+|---|---|---|---|
+| Phase 1 | format + keyword + relevance | Default (no flags) | Learn hard constraints + basic headline grounding |
+| Phase 2 | format + keyword + relevance + humor | `--use_humor_judge` or `--use_reward_model` | Improve joke quality via external scorer |
 
-Phase 2 activation requires only one change:
-```python
-reward_fn = build_reward_fn(humor_scorer=my_scorer)  # instead of None
+Phase 2 is fully implemented with two scorer backends:
+
+```bash
+# Option A: Gemini LLM-as-Judge (requires GEMINI_API_KEY)
+python -m rl.train_grpo --use_humor_judge
+
+# Option B: Trained Reward Model (faster, deterministic)
+python -m rl.train_grpo --use_reward_model
 ```
+
+## Reward Model Training (train_reward_model.py)
+
+A lightweight reward model (Qwen3-1.7B + linear score head) trained with Bradley-Terry preference loss on humor preference pair data.
+
+- **Base model**: Qwen3-1.7B (sequence classification)
+- **LoRA**: r=16, alpha=32, `modules_to_save=["score"]` (score head must be fully trainable)
+- **Loss**: Bradley-Terry: `-log(σ(r_chosen - r_rejected))`
+- **Data**: `data/reward/preference_{train,val}.jsonl` (generated by `format_reward_pairs()`)
+
+```bash
+python -m rl.train_reward_model
+python -m rl.train_reward_model --model_name Qwen/Qwen3-1.7B --lr 1e-5
+```
+
+## Humor Judge (humor_judge.py)
+
+Gemini-based humor scoring using `gemini-3-flash-preview`. Supports both single-pair and batch scoring modes.
+
+- **Batch scoring**: Multiple (prompt, response) pairs packed into a single API call for efficiency
+- **Score mapping**: Gemini rates 1-5, mapped to [-1, 1] via `(score-1)/4*2-1`
+- **Graceful degradation**: Returns 0.0 on API failure
+
+## Reward Monitoring (RewardStatsRecorder + LoggingGRPOTrainer)
+
+`RewardStatsRecorder` (in `rewards.py`) collects per-component reward statistics (format, keyword, relevance, humor) at each training step. `LoggingGRPOTrainer` (in `train_grpo.py`) extends TRL's `GRPOTrainer` to inject these statistics into the trainer's log stream, enabling per-component monitoring via wandb/tensorboard.
 
 ## Key Design Decisions
 

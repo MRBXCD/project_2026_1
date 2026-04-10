@@ -11,29 +11,30 @@
   - [3.2 Layer 1: Source Parsers](#32-layer-1-source-parsers)
   - [3.3 Layer 2: Unified Intermediate Format](#33-layer-2-unified-intermediate-format)
   - [3.4 Layer 3: Formatters](#34-layer-3-formatters)
-- [4. SFT Data Design](#4-sft-data-design)
-  - [4.1 Type A: General Humor Data](#41-type-a-general-humor-data)
-  - [4.2 Type B: Task Formatted Data (Synthesized)](#42-type-b-task-formatted-data-synthesized)
-  - [4.3 Type A and Type B Mixing Strategy](#43-type-a-and-type-b-mixing-strategy)
-  - [4.4 Qwen3 Thinking Mode Handling](#44-qwen3-thinking-mode-handling)
-- [5. GRPO Data Design](#5-grpo-data-design)
-  - [5.1 Subtask 1: Headline-Only](#51-subtask-1-headline-only)
-  - [5.2 Subtask 2: Keywords-Only](#52-subtask-2-keywords-only)
-- [6. Reward Model Preference Pair Data Design](#6-reward-model-preference-pair-data-design)
-  - [6.1 Purpose and Training Objective](#61-purpose-and-training-objective)
-  - [6.2 Preference Pair Construction Strategy](#62-preference-pair-construction-strategy)
-  - [6.3 Data Format](#63-data-format)
-  - [6.4 Construction Flow and Sampling Details](#64-construction-flow-and-sampling-details)
-  - [6.5 Language Rebalancing Strategy](#65-language-rebalancing-strategy)
-  - [6.6 Hard-Negative Synthesis Pipeline](#66-hard-negative-synthesis-pipeline)
-  - [6.7 Notes](#67-notes)
-- [7. Prompt Template Design](#7-prompt-template-design)
-  - [7.1 Type A General Humor Prompt Pool](#71-type-a-general-humor-prompt-pool)
-  - [7.2 Type B Task Formatted Prompt Templates](#72-type-b-task-formatted-prompt-templates)
-  - [7.3 GRPO Prompt Templates](#73-grpo-prompt-templates)
-- [8. Quality Filtering Strategy](#8-quality-filtering-strategy)
-- [9. File Organization and Output](#9-file-organization-and-output)
-- [10. Pipeline Invocation](#10-pipeline-invocation)
+- [4. Configuration System](#4-configuration-system)
+- [5. SFT Data Design](#5-sft-data-design)
+  - [5.1 Type A: General Humor Data](#51-type-a-general-humor-data)
+  - [5.2 Type B: Task Formatted Data (Synthesized)](#52-type-b-task-formatted-data-synthesized)
+  - [5.3 Type A and Type B Mixing Strategy](#53-type-a-and-type-b-mixing-strategy)
+  - [5.4 Qwen3 Thinking Mode Handling](#54-qwen3-thinking-mode-handling)
+- [6. GRPO Data Design](#6-grpo-data-design)
+  - [6.1 Subtask 1: Headline-Only](#61-subtask-1-headline-only)
+  - [6.2 Subtask 2: Keywords-Only](#62-subtask-2-keywords-only)
+- [7. Reward Model Preference Pair Data Design](#7-reward-model-preference-pair-data-design)
+  - [7.1 Purpose and Training Objective](#71-purpose-and-training-objective)
+  - [7.2 Preference Pair Construction Strategy](#72-preference-pair-construction-strategy)
+  - [7.3 Data Format](#73-data-format)
+  - [7.4 Construction Flow and Sampling Details](#74-construction-flow-and-sampling-details)
+  - [7.5 Language Rebalancing Strategy](#75-language-rebalancing-strategy)
+  - [7.6 Hard-Negative Synthesis Pipeline](#76-hard-negative-synthesis-pipeline)
+  - [7.7 Notes](#77-notes)
+- [8. Prompt Template Design](#8-prompt-template-design)
+  - [8.1 Type A General Humor Prompt Pool](#81-type-a-general-humor-prompt-pool)
+  - [8.2 Type B Task Formatted Prompt Templates](#82-type-b-task-formatted-prompt-templates)
+  - [8.3 GRPO Prompt Templates](#83-grpo-prompt-templates)
+- [9. Quality Filtering Strategy](#9-quality-filtering-strategy)
+- [10. File Organization and Output](#10-file-organization-and-output)
+- [11. Pipeline Invocation](#11-pipeline-invocation)
 
 ---
 
@@ -278,22 +279,46 @@ Convert SemEval data to GRPO training prompt format:
 
 ---
 
-## 4. SFT Data Design
+## 4. Configuration System
 
-### 4.1 Type A: General Humor Data
+All tunable parameters are centralized in `data_preprocessing/config.py`. Each code file imports from this module instead of defining its own constants.
+
+### Parameter Groups
+
+| Section | Parameters | Previously In |
+|---|---|---|
+| **Parsing** | `RJOKES_SCORE_CAP`, `HUMOR_SCORE_MAX`, `CFUN_MIN_LEN`, `CFUN_MAX_LEN` | `parsers.py` |
+| **SFT Formatting** | `SFT_TYPE_A_SOURCE_SELECTION`, `SFT_TYPE_A_RATIO`, `SFT_VAL_RATIO` | `formatters.py` (hardcoded in function) |
+| **Reward Pair Formatting** | `REWARD_PAIR_ALLOCATION`, `REWARD_SCORE_BUCKETS`, `REWARD_PAIR_TEMPLATES`, `REWARD_TEMPLATE_RATIOS`, `MAX_REUSE_PER_CHOSEN_BY_LANG`, `MAX_REUSE_PER_REJECTED_BY_LANG`, etc. | `formatters.py` |
+| **Synthesis - Task Data** | `REALTIME_MULTI_GROUP_SIZE`, `DEFAULT_KEYWORD_POOL_SIZE`, `DEFAULT_KEYWORD_CANDIDATE_LIMIT`, `SPACY_MODEL_NAMES`, `KEYWORD_ALLOWED_POS` | `synthesize_task_data.py` |
+| **Synthesis - Reward Data** | `BATCH_SIZE`, `_SCORE_THRESHOLDS` | `synthesize_reward_data.py` |
+| **Pipeline CLI Defaults** | `DEFAULT_N_HEADLINE`, `DEFAULT_N_KEYWORD`, `DEFAULT_EVAL_RATIO`, `DEFAULT_SEED` | `pipeline.py` argparse |
+
+### What stays in each file
+
+- **Path constants** — structural, tied to project layout
+- **Prompt templates** (`prompt_templates.py`) — content, not numeric config
+- **CFun instruction strings & regex patterns** (`parsers.py`) — cleaning logic
+- **Boring text generation prompts & API schema** (`synthesize_reward_data.py`) — prompt content
+
+---
+
+## 5. SFT Data Design
+
+### 5.1 Type A: General Humor Data
 
 **Goal**: Teach model humorous language style.
 
-**Data Sources and Quality Filtering**:
+**Source Selection Policy** (configured in `SFT_TYPE_A_SOURCE_SELECTION` in `config.py`):
 
-| Data Source | Language | Filter Condition | Est. Count after Filter |
+| Data Source | Language | Selection Strategy | Count |
 |---|---|---|---|
-| rJokes | EN | `score >= 5` | ~5K-8K (TBD) |
-| CFun | ZH | None (Use all, random sample to control volume) | Sample ~5K |
-| HAHA 2019 | ES | `is_humor == 1` | ~10K |
-| Chinese Humor | ZH | `HumorLevel >= 4` | ~1K |
+| rJokes | EN | Top by score | 1,000 |
+| HAHA 2019 | ES | Top by score | 1,000 |
+| CFun | ZH | Random sample | 1,000 |
+| Chinese Humor | ZH | **Excluded** from SFT Type A | — |
 
-> CFun has 164K items, using all would make Chinese data far outweigh En/Es, so **downsampling** is needed to balance languages.
+> Chinese Humor is excluded because it is reserved for reward preference pair construction. CFun provides sufficient Chinese humor data for SFT.
 
 **Final Format**:
 
@@ -306,7 +331,7 @@ Convert SemEval data to GRPO training prompt format:
 }
 ```
 
-### 4.2 Type B: Task Formatted Data (Synthesized)
+### 5.2 Type B: Task Formatted Data (Synthesized)
 
 **Goal**: Teach model to understand "Headline → Joke" and "Keywords → Joke" input-output mappings.
 
@@ -344,16 +369,16 @@ Convert SemEval data to GRPO training prompt format:
 }
 ```
 
-### 4.3 Type A and Type B Mixing Strategy
+### 5.3 Type A and Type B Mixing Strategy
 
 | Data Type | Ratio | Description |
 |---|---|---|
-| Type A (General Humor) | ~60-70% | Establish humor language style foundation |
-| Type B (Task Formatted) | ~30-40% | Teach model to understand task input-output mappings |
+| Type A (General Humor) | 70% (`SFT_TYPE_A_RATIO` in `config.py`) | Establish humor language style foundation |
+| Type B (Task Formatted) | 30% | Teach model to understand task input-output mappings |
 
-Mixed then shuffled, split 90/10 into train/val.
+Mixed then shuffled, split 90/10 into train/val (`SFT_VAL_RATIO` in `config.py`).
 
-### 4.4 Qwen3 Thinking Mode Handling
+### 5.4 Qwen3 Thinking Mode Handling
 
 Qwen3 series models (including Qwen3-8B) **enable thinking mode by default**, generating internal reasoning in `<think>...</think>` tags before response.
 
@@ -363,11 +388,11 @@ For humor generation, thinking mode is unnecessary and harmful (wastes tokens, i
 
 ---
 
-## 5. GRPO Data Design
+## 6. GRPO Data Design
 
 GRPO stage "training data" is **prompt collection** (no response), model generates multiple responses itself then scored by reward function.
 
-### 5.1 Subtask 1: Headline-Only
+### 6.1 Subtask 1: Headline-Only
 
 ```json
 {
@@ -382,7 +407,7 @@ GRPO stage "training data" is **prompt collection** (no response), model generat
 - `headline` and `keywords` fields **not passed to model**, only used by reward function during calculation
 - Empty `keywords` list means no keyword constraint
 
-### 5.2 Subtask 2: Keywords-Only
+### 6.2 Subtask 2: Keywords-Only
 
 ```json
 {
@@ -399,9 +424,9 @@ GRPO stage "training data" is **prompt collection** (no response), model generat
 
 ---
 
-## 6. Reward Model Preference Pair Data Design
+## 7. Reward Model Preference Pair Data Design
 
-### 6.1 Purpose and Training Objective
+### 7.1 Purpose and Training Objective
 
 In GRPO training, we need a reward function to score each response generated by the model. "Humor level" scoring has two implementation methods:
 
@@ -412,7 +437,7 @@ In GRPO training, we need a reward function to score each response generated by 
 
 If choosing to train a reward model, we need to construct preference pair data. Training objective: given a text, output a scalar score such that "funnier" text gets higher score than "not funny" text.
 
-### 6.2 Preference Pair Construction Strategy
+### 7.2 Preference Pair Construction Strategy
 
 We utilize **existing scored data** to construct preference pairs. Core idea: For the same prompt, select chosen from high-score samples, rejected from low-score samples.
 
@@ -428,7 +453,7 @@ We utilize **existing scored data** to construct preference pairs. Core idea: Fo
 >
 > **About tie-breaking**: All three datasets have highly discrete scores (rJokes: 12 unique values, Chinese Humor: 5 unique values, HAHA: 61% at score=0). A naive `>= q70` / `<= q30` split would include entire tie groups, violating the 30/40/30 split (e.g., rJokes would select 75% instead of 60%). The implementation uses rank-based selection with random tie-breaking: indices are shuffled, stable-sorted by score, then the bottom/top 30% by index position are selected. This guarantees exactly 30% in each group regardless of score discreteness.
 
-### 6.3 Data Format
+### 7.3 Data Format
 
 Preference pair data uses TRL `RewardTrainer` compatible format:
 
@@ -446,7 +471,7 @@ Preference pair data uses TRL `RewardTrainer` compatible format:
 }
 ```
 
-### 6.4 Construction Flow and Sampling Details
+### 7.4 Construction Flow and Sampling Details
 
 ```
 Raw Scored Data (per source)
@@ -463,7 +488,9 @@ Raw Scored Data (per source)
 │    mid  = middle 40% ← Discard   │
 │  • Randomly pair high (chosen)    │
 │    with low (rejected)            │
-│  • Each chosen max 3 times        │
+│  • Per-lang reuse limits          │
+│    (en:4, es:5, zh:6 per chosen  │
+│     and rejected, config.py)     │
 │  • Prompt from Type A pool        │
 └──────────┬───────────────────────┘
            │
@@ -471,7 +498,7 @@ Raw Scored Data (per source)
 ┌──────────────────────────────────┐
 │ Step 2: Apply score_based cap     │
 │  • Per REWARD_PAIR_ALLOCATION     │
-│    (en:7K, es:7K, zh:None=all)   │
+│    (en:7K, es:7K, zh:7K)         │
 │  • Downsample if over cap         │
 └──────────┬───────────────────────┘
            │
@@ -482,7 +509,7 @@ Raw Scored Data (per source)
 │    from data/synthesized/         │
 │  • Apply synthesized cap per      │
 │    REWARD_PAIR_ALLOCATION         │
-│    (en:7K, es:7K, zh:13K)        │
+│    (en:7K, es:7K, zh:7K)         │
 │  • Downsample if over cap         │
 └──────────┬───────────────────────┘
            │
@@ -509,7 +536,7 @@ Raw Scored Data (per source)
 > The severe Chinese underrepresentation (~800 pairs vs ~50K+ EN/ES combined) caused language bias
 > in the first reward model iteration — see Section 6.5 for the rebalancing strategy.
 
-### 6.5 Language Rebalancing Strategy
+### 7.5 Language Rebalancing Strategy
 
 **Problem**: The initial reward model exhibited language bias due to data imbalance. Chinese/English text received inflated humor scores regardless of actual quality, because the model learned a shortcut: "Chinese text → usually chosen" / "English text → usually seen in training".
 
@@ -523,21 +550,21 @@ Raw Scored Data (per source)
 | **Hard-negative synthesis** | EN, ZH, ES | Generate obviously non-humorous rejected texts + pair with high-quality chosen | `synthesize_reward_data.py` → `reward_neg_{lang}.jsonl` |
 | **Synthesized cap** | EN, ZH, ES | Limit hard-negative pairs per language | `REWARD_PAIR_ALLOCATION[lang]["synthesized"]` |
 
-**Rebalanced Target Distribution — configured in `REWARD_PAIR_ALLOCATION` (`formatters.py`)**:
+**Rebalanced Target Distribution — configured in `REWARD_PAIR_ALLOCATION` (`config.py`)**:
 
 | Language | Score-based Pairs | Synthesized Hard-Negative Pairs | Total | Hard-neg % |
 |---|---|---|---|---|
 | EN | 7,000 | 7,000 | 14,000 | 50% |
-| ZH | ~1,230 (all available) | 13,000 | ~14,230 | ~91% |
+| ZH | 7,000 | 7,000 | 14,000 | 50% |
 | ES | 7,000 | 7,000 | 14,000 | 50% |
 
 > **Why fixed allocation instead of a single `max_pairs_per_lang` cap?**
 > Score-based pairs (joke vs. less-funny joke) and hard-negative pairs (joke vs. boring text) teach
 > the model fundamentally different things. A single cap applied after merging cannot control the
-> composition ratio. The `REWARD_PAIR_ALLOCATION` config controls each type independently, ensuring:
+> composition ratio. The `REWARD_PAIR_ALLOCATION` in `config.py` controls each type independently, ensuring:
 > 1. EN/ES hard-negative coverage is raised to 50% (vs. 5.3%/40.7% in the pre-fix dataset).
-> 2. ZH uses all available score-based pairs (~1,230, limited by dataset size) plus synthesized pairs.
-> 3. Total per-language count stays balanced (~14K each).
+> 2. All three languages have uniform 7K/7K allocation for balanced composition.
+> 3. Total per-language count stays balanced (14K each).
 >
 > **Pre-fix composition (for reference):**
 >
@@ -550,7 +577,7 @@ Raw Scored Data (per source)
 > The EN imbalance (only 5.3% hard-negative) was the root cause of the reward model assigning inflated
 > scores to boring English text. The fixed `REWARD_PAIR_ALLOCATION` resolves this.
 
-### 6.6 Hard-Negative Synthesis Pipeline
+### 7.6 Hard-Negative Synthesis Pipeline
 
 Implemented in `synthesize_reward_data.py`. Generates preference pairs where **chosen** = real high-quality joke, **rejected** = synthetically generated boring text.
 
@@ -614,7 +641,7 @@ CFun is no longer pre-extracted into a standalone CSV. During `pipeline --stage 
 
 For reward synthesis, `load_cfun_jokes()` now samples Chinese chosen texts directly from `unified_all.jsonl` (`source="cfun"`), with no secondary cleanup layer.
 
-### 6.7 Notes
+### 7.7 Notes
 
 **1. Prompt Consistency Issue**
 
@@ -650,9 +677,9 @@ The rejected text generation uses batched Gemini API calls (BATCH_SIZE=100 state
 
 ---
 
-## 7. Prompt Template Design
+## 8. Prompt Template Design
 
-### 7.1 Type A General Humor Prompt Pool
+### 8.1 Type A General Humor Prompt Pool
 
 Used for SFT Type A data user-side prompt. Randomly **select one** from corresponding language pool during training sample construction.
 
@@ -716,7 +743,7 @@ Used for SFT Type A data user-side prompt. Randomly **select one** from correspo
 15. ¿Sabes algún chiste corto?
 ```
 
-### 7.2 Type B Task Formatted Prompt Templates
+### 8.2 Type B Task Formatted Prompt Templates
 
 Used for SFT Type B data and synthesis script. Distinguished by subtask and language.
 
@@ -778,22 +805,24 @@ Eres un comediante ingenioso. Escribe un chiste corto y divertido que incluya na
 Escribe un chiste divertido de una línea que contenga ambas palabras.
 ```
 
-### 7.3 GRPO Prompt Templates
+### 8.3 GRPO Prompt Templates
 
-GRPO stage uses same template structure as Type B, but data source is SemEval official data. Templates reused from Section 6.2.
+GRPO stage uses same template structure as Type B, but data source is SemEval official data. Templates reused from Section 7.2.
 
 ---
 
-## 8. Quality Filtering Strategy
+## 9. Quality Filtering Strategy
 
 ### SFT Stage Filtering
 
-| Data Source | Filter Condition | Description |
-|---|---|---|
-| rJokes | `score >= 5` | Pick high score jokes (approx top 20-30%), threshold adjustable later |
-| CFun | No filter + Downsample | 164K all usable, but need downsample to ~5K for balance |
-| HAHA 2019 | `is_humor == 1` | Exclude non-humorous text |
-| Chinese Humor | `HumorLevel >= 4` | Pick relatively high score jokes |
+Configured via `SFT_TYPE_A_SOURCE_SELECTION` in `config.py`:
+
+| Data Source | Selection Strategy | Count | Description |
+|---|---|---|---|
+| rJokes | Top by score | 1,000 | Highest-scored English jokes |
+| HAHA 2019 | Top by score | 1,000 | Highest-scored Spanish jokes |
+| CFun | Random sample | 1,000 | Random Chinese jokes |
+| Chinese Humor | Excluded | — | Reserved for reward pair construction |
 
 ### General Text Quality Filtering
 
@@ -814,7 +843,7 @@ The following data kept intact (including low score/non-humorous), not used in S
 
 ---
 
-## 9. File Organization and Output
+## 10. File Organization and Output
 
 ### Code File Organization
 
@@ -822,6 +851,7 @@ The following data kept intact (including low score/non-humorous), not used in S
 proj_2026_1/
 ├── data_preprocessing/
 │   ├── DATA_PIPELINE_DESIGN.md        # This design document
+│   ├── config.py                      # Unified configuration (all tunable parameters)
 │   ├── parsers.py                     # Layer 1: Parser functions for each source
 │   ├── prompt_templates.py            # Multi-lang prompt pool + task templates
 │   ├── formatters.py                  # Layer 3: SFT / GRPO / Preference Pair Formatters
@@ -854,9 +884,8 @@ proj_2026_1/
 │   │   └── semeval_task/
 │   │
 │   ├── preprocessed/               # Unified Intermediate Format (Contains full scores, reusable)
-│   │   ├── unified_en.jsonl
-│   │   ├── unified_zh.jsonl
-│   │   └── unified_es.jsonl
+│   │   ├── unified_all.jsonl       #   All humor data (single file, grouped by source field)
+│   │   └── semeval.jsonl           #   SemEval data (different schema, stored separately)
 │   │
 │   ├── synthesized/                # Synthesized Data
 │   │   ├── type_b_en.jsonl         #   SFT Type B (Gemini-generated task data)
@@ -875,12 +904,14 @@ proj_2026_1/
 │   │   └── preference_val.jsonl
 │   │
 │   └── grpo/                       # Final GRPO Training Data
-│       └── grpo_prompts.jsonl
+│       ├── grpo_prompts_train.jsonl  #   (when eval_ratio > 0, default 0.2)
+│       └── grpo_prompts_eval.jsonl   #   (when eval_ratio > 0)
+│       # or: grpo_prompts.jsonl      #   (when eval_ratio == 0, full dataset)
 ```
 
 ### Output File Format Description
 
-**`preprocessed/unified_*.jsonl`** — Unified Intermediate Format, one JSON per line:
+**`preprocessed/unified_all.jsonl`** — Unified Intermediate Format, one JSON per line:
 
 ```json
 {"text": "...", "lang": "en", "score": 0.75, "source": "rjokes"}
@@ -906,15 +937,16 @@ proj_2026_1/
 
 ---
 
-## 10. Pipeline Invocation
+## 11. Pipeline Invocation
 
 All commands executed from project root, using `python -m` module mode.
+CLI defaults are configured in `config.py` (Section 4).
 
-### 10.1 One-Click Completion (Recommended)
+### 11.1 One-Click Completion (Recommended)
 
 ```bash
 # Method 1: Full pipeline (Inc. Type B synthesis, requires Gemini API)
-#   Order: parse → synthesize → format_sft → format_grpo → format_reward
+#   Order: parse → synthesize → format_reward → format_sft → format_grpo
 export GEMINI_API_KEY='your-api-key'
 python -m data_preprocessing.pipeline --stage full
 
@@ -922,11 +954,11 @@ python -m data_preprocessing.pipeline --stage full
 python -m data_preprocessing.pipeline --stage full --n_headline 300 --n_keyword 150
 
 # Method 2: Pipeline without synthesis (No API needed, if Type B ready)
-#   Order: parse → format_sft → format_grpo → format_reward
+#   Order: parse → format_reward → format_sft → format_grpo
 python -m data_preprocessing.pipeline --stage all
 ```
 
-### 10.2 Step-by-Step Execution (For Debugging)
+### 11.2 Step-by-Step Execution (For Debugging)
 
 ```bash
 # Step 1: Parse Raw Data → Unified Intermediate Format
@@ -974,12 +1006,12 @@ python -m data_preprocessing.pipeline --stage format_grpo
 #   Output: data/reward/preference_train.jsonl, preference_val.jsonl
 #
 #   Allocation (score_based / synthesized caps) is configured in
-#   REWARD_PAIR_ALLOCATION in data_preprocessing/formatters.py.
+#   REWARD_PAIR_ALLOCATION in data_preprocessing/config.py.
 #   No CLI flags needed — edit the constant directly to change allocation.
 python -m data_preprocessing.pipeline --stage format_reward
 ```
 
-### 10.3 Stage Comparison
+### 11.3 Stage Comparison
 
 | stage | Inc Parse | Inc SFT Synth | Inc Format | Need API | Scenario |
 |---|---|---|---|---|---|
@@ -989,7 +1021,7 @@ python -m data_preprocessing.pipeline --stage format_reward
 
 > Note: Reward hard-negative synthesis (`synthesize_reward_data.py`) is always run as a standalone script, not included in `full` or `all`, because it requires Gemini API and generates a large number of API calls.
 
-### 10.4 Recommended Execution Order
+### 11.4 Recommended Execution Order
 
 **First Run (full pipeline including reward rebalancing)**:
 
@@ -1015,7 +1047,7 @@ python -m data_preprocessing.pipeline --stage format_reward
 
 **Subsequent Adjustment** (e.g., modified filter threshold, no re-parse/re-synthesis needed):
 1. `--stage format_sft` Re-generate SFT data
-2. Edit `REWARD_PAIR_ALLOCATION` in `formatters.py`, then `--stage format_reward`
+2. Edit `REWARD_PAIR_ALLOCATION` in `config.py`, then `--stage format_reward`
 3. Other stages as needed
 
 **Running Tests:**
