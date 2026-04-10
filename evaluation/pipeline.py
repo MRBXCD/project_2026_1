@@ -75,6 +75,7 @@ def _step_benchmark(args):
         sft_eval_mode=args.sft_eval_mode,
         top_k=args.top_k,
         results_dir=Path(args.results_dir),
+        skip_sft_for_grpo=args.skip_sft_for_grpo,
     )
 
 
@@ -93,6 +94,7 @@ def _step_generate(args):
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         output_dir=args.output_dir,
+        skip_sft_for_grpo=args.skip_sft_for_grpo,
     )
 
 
@@ -202,6 +204,10 @@ def main():
                         choices=["peft", "merge"])
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--top_k", type=int, default=10)
+    parser.add_argument(
+        "--skip_sft_for_grpo", action="store_true",
+        help="Load GRPO adapter directly on base model without SFT merge (for base->GRPO experiments)",
+    )
 
     # --- Generation configuration ---
     parser.add_argument(

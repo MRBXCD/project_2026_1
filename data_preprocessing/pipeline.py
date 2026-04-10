@@ -62,6 +62,12 @@ from data_preprocessing.synthesize_task_data import (
     synthesize_for_language,
     save_synthesized,
 )
+from data_preprocessing.config import (
+    DEFAULT_N_HEADLINE,
+    DEFAULT_N_KEYWORD,
+    DEFAULT_EVAL_RATIO,
+    DEFAULT_SEED,
+)
 
 
 # ============================================================
@@ -241,7 +247,7 @@ def run_format_reward() -> None:
         - data/reward/preference_val.jsonl
 
     Per-language allocation (score_based / synthesized caps) is configured via
-    REWARD_PAIR_ALLOCATION in formatters.py.
+    REWARD_PAIR_ALLOCATION in config.py.
     """
     REWARD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -355,21 +361,21 @@ def main():
         help="Processing stage to execute (all=exclude synthesis, full=include synthesis)",
     )
     parser.add_argument(
-        "--n_headline", type=int, default=200,
-        help="synthesize stage: Number of headlines to synthesize per language (default 200)",
+        "--n_headline", type=int, default=DEFAULT_N_HEADLINE,
+        help=f"synthesize stage: Number of headlines to synthesize per language (default {DEFAULT_N_HEADLINE})",
     )
     parser.add_argument(
-        "--n_keyword", type=int, default=100,
-        help="synthesize stage: Number of keywords to synthesize per language (default 100)",
+        "--n_keyword", type=int, default=DEFAULT_N_KEYWORD,
+        help=f"synthesize stage: Number of keywords to synthesize per language (default {DEFAULT_N_KEYWORD})",
     )
     parser.add_argument(
-        "--eval_ratio", type=float, default=0.2,
-        help="format_grpo stage: Fraction of SemEval data reserved for evaluation "
-             "(default 0.2). Set to 0 to disable splitting.",
+        "--eval_ratio", type=float, default=DEFAULT_EVAL_RATIO,
+        help=f"format_grpo stage: Fraction of SemEval data reserved for evaluation "
+             f"(default {DEFAULT_EVAL_RATIO}). Set to 0 to disable splitting.",
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Random seed (default 42)",
+        "--seed", type=int, default=DEFAULT_SEED,
+        help=f"Random seed (default {DEFAULT_SEED})",
     )
     args = parser.parse_args()
 

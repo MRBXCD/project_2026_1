@@ -43,18 +43,17 @@ from pathlib import Path
 import datasets
 import pandas as pd
 
+from data_preprocessing.config import (
+    RJOKES_SCORE_CAP,
+    HUMOR_SCORE_MAX,
+    CFUN_MIN_LEN,
+    CFUN_MAX_LEN,
+)
+
 
 # ============================================================
 # Constant Definitions
 # ============================================================
-
-# Cap value for rJokes score normalization.
-# The actual maximum raw score in the dataset is 11 (Reddit upvotes).
-# Using 11 maps the full data range onto [0, 1].
-RJOKES_SCORE_CAP = 11
-
-# Max score for Chinese Humor and HAHA (original is 1-5)
-HUMOR_SCORE_MAX = 5.0
 
 # CFun extraction and cleaning rules
 INSTR_HUMOR_DETECT = (
@@ -68,8 +67,6 @@ INSTR_HUMOR_REASON = (
 INSTR_FIRST_SENTENCE_COMPLETION = (
     "我将给你笑话的第一句话，请你生成整个笑话。笑话的第一句话如下："
 )
-CFUN_MIN_LEN = 10
-CFUN_MAX_LEN = 500
 CFUN_REMOVE_LABEL_PATTERN = re.compile(r"(?:标题|内容)\s*[：:]\s*")
 CFUN_WHITESPACE_PATTERN = re.compile(r"\s+")
 

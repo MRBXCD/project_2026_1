@@ -84,8 +84,13 @@ def _load_sft(model_name: str, sft_repo: str):
     return model, tokenizer
 
 
-def _load_grpo(model_name: str, sft_repo: str, grpo_repo: str):
-    """Load base + merge SFT + load GRPO adapter."""
+def _load_grpo(model_name: str, sft_repo: str, grpo_repo: str, skip_sft: bool = False):
+    """Load base (+ optional SFT merge) + GRPO adapter.
+
+    Args:
+        skip_sft: If True, load GRPO adapter directly on base model
+                  without merging SFT first (for base->GRPO experiments).
+    """
     print(f"  Loading base: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
     if tokenizer.pad_token is None:
@@ -96,9 +101,12 @@ def _load_grpo(model_name: str, sft_repo: str, grpo_repo: str):
         device_map="auto",
         attn_implementation="flash_attention_2",
     )
-    print(f"  Merging SFT adapter: {sft_repo}")
-    model = PeftModel.from_pretrained(model, sft_repo)
-    model = model.merge_and_unload()
+    if skip_sft:
+        print("  Skipping SFT adapter (base -> GRPO mode)")
+    else:
+        print(f"  Merging SFT adapter: {sft_repo}")
+        model = PeftModel.from_pretrained(model, sft_repo)
+        model = model.merge_and_unload()
     print(f"  Loading GRPO adapter: {grpo_repo}")
     model = PeftModel.from_pretrained(model, grpo_repo)
     model.eval()
@@ -237,8 +245,14 @@ def run(
     max_new_tokens: int = 256,
     temperature: float = 0.9,
     output_dir: str | Path | None = None,
+    skip_sft_for_grpo: bool = False,
 ):
-    """Programmatic entry point for the generate step."""
+    """Programmatic entry point for the generate step.
+
+    Args:
+        skip_sft_for_grpo: If True, load GRPO adapter directly on base
+            model without merging SFT first (for base->GRPO experiments).
+    """
     if models is None:
         models = ["base", "sft", "grpo"]
     eval_path = Path(eval_file) if eval_file else EVAL_PROMPTS_FILE
@@ -259,7 +273,7 @@ def run(
     loaders = {
         "base": lambda: _load_base(base_model),
         "sft": lambda: _load_sft(base_model, sft_repo),
-        "grpo": lambda: _load_grpo(base_model, sft_repo, grpo_repo),
+        "grpo": lambda: _load_grpo(base_model, sft_repo, grpo_repo, skip_sft=skip_sft_for_grpo),
     }
 
     for model_name in models:
@@ -320,6 +334,10 @@ def main():
     parser.add_argument("--n_candidates", type=int, default=16)
     parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.9)
+    parser.add_argument(
+        "--skip_sft_for_grpo", action="store_true",
+        help="Load GRPO adapter directly on base model without SFT merge",
+    )
     args = parser.parse_args()
 
     run(
@@ -329,6 +347,7 @@ def main():
         grpo_repo=args.grpo_repo,
         eval_file=args.eval_file,
         n_candidates=args.n_candidates,
+        skip_sft_for_grpo=args.skip_sft_for_grpo,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
     )

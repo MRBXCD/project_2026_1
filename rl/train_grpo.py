@@ -120,6 +120,7 @@ class LoggingGRPOTrainer(GRPOTrainer):
 def load_sft_merged_model(
     base_model_name: str,
     sft_adapter_repo: str | Path,
+    skip_sft: bool = False,
 ) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Load the base model, merge the SFT LoRA adapter, and return a plain model.
 
@@ -182,16 +183,19 @@ def load_sft_merged_model(
     )
     print(f"  Base model parameters: {model.num_parameters() / 1e9:.1f}B")
 
-    # Load SFT LoRA adapter (local path or Hub repo ID both accepted by PeftModel)
-    print(f"Loading SFT adapter: {sft_adapter_repo_str}")
-    model = PeftModel.from_pretrained(model, sft_adapter_repo_str)
+    if skip_sft:
+        print("  Skipping SFT adapter merge (base-only mode)")
+    else:
+        # Load SFT LoRA adapter (local path or Hub repo ID both accepted by PeftModel)
+        print(f"Loading SFT adapter: {sft_adapter_repo_str}")
+        model = PeftModel.from_pretrained(model, sft_adapter_repo_str)
 
-    # Merge LoRA weights into base model and discard adapter structure.
-    # After this call, model is a plain PreTrainedModel (not PeftModel)
-    # with the SFT knowledge permanently fused into its weights.
-    print("Merging SFT adapter into base weights...")
-    model = model.merge_and_unload()
-    print("  Merge complete. Model is now a standard PreTrainedModel.")
+        # Merge LoRA weights into base model and discard adapter structure.
+        # After this call, model is a plain PreTrainedModel (not PeftModel)
+        # with the SFT knowledge permanently fused into its weights.
+        print("Merging SFT adapter into base weights...")
+        model = model.merge_and_unload()
+        print("  Merge complete. Model is now a standard PreTrainedModel.")
 
     return model, tokenizer
 
@@ -556,18 +560,24 @@ def main():
         "--tag", type=str, default="normal",
         help="Tag for the training run",
     )
+    parser.add_argument(
+        "--skip_sft", action="store_true",
+        help="Skip SFT adapter merge, train GRPO directly on base model.",
+    )
     args = parser.parse_args()
 
     if args.use_humor_judge and args.use_reward_model:
         parser.error("--use_humor_judge and --use_reward_model are mutually exclusive.")
 
     # ---- Step 1: Load Model (Base + Merge SFT Adapter) ----
+    mode_label = "base only" if args.skip_sft else "base + merge SFT adapter"
     print("=" * 60)
-    print("Step 1: Load model (base + merge SFT adapter)")
+    print(f"Step 1: Load model ({mode_label})")
     print("=" * 60)
     model, tokenizer = load_sft_merged_model(
         base_model_name=args.model_name,
         sft_adapter_repo=args.sft_adapter_repo,
+        skip_sft=args.skip_sft,
     )
 
     # ---- Step 2: Load Dataset ----

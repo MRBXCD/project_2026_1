@@ -36,6 +36,7 @@ from pathlib import Path
 
 from data_preprocessing.prompt_templates import get_random_type_a_prompt
 from data_preprocessing.synthesize_task_data import _init_gemini_client
+from data_preprocessing.config import BATCH_SIZE, _SCORE_THRESHOLDS
 
 
 # ============================================================
@@ -51,8 +52,6 @@ UNIFIED_ALL_FILE = PREPROCESSED_DIR / "unified_all.jsonl"
 # ============================================================
 # Gemini Batch Prompts for Non-Humorous Text Generation
 # ============================================================
-
-BATCH_SIZE = 100
 
 _BORING_TEXT_BATCH_PROMPTS = {
     "en": (
@@ -189,18 +188,6 @@ def load_cfun_jokes(n_samples: int, seed: int = 42) -> list[str]:
     selected = candidates[:n_samples]
     print(f"  cfun (zh): selected {len(selected)} jokes")
     return selected
-
-
-_SCORE_THRESHOLDS = {
-    # rJokes raw scores are Reddit upvotes, normalized as min(raw, 11) / 11.
-    # raw >= 5 → normalized >= 5/11 ≈ 0.4545.  Selects the top ~8% of
-    # jokes and yields a large enough pool for synthesis (~34K candidates).
-    "en": round(5 / 11, 4),
-    # HAHA funniness_average is normalized as avg / 5.0.
-    # Using 0.3 (raw avg >= 1.5/5) keeps most genuinely humorous tweets
-    # while excluding the very lowest quality, giving a large enough pool.
-    "es": 0.3,
-}
 
 
 def load_high_score_jokes(

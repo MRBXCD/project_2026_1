@@ -61,6 +61,13 @@ from data_preprocessing.prompt_templates import (
     build_headline_prompt,
     build_keyword_prompt,
 )
+from data_preprocessing.config import (
+    REALTIME_MULTI_GROUP_SIZE,
+    DEFAULT_KEYWORD_POOL_SIZE,
+    DEFAULT_KEYWORD_CANDIDATE_LIMIT,
+    SPACY_MODEL_NAMES,
+    KEYWORD_ALLOWED_POS,
+)
 
 # ============================================================
 # Path Constants
@@ -75,22 +82,6 @@ SEMEVAL_TASK_FILES = {
     "zh": DATA_DIR / "raw" / "semeval_task" / "task-a-zh.tsv",
     "es": DATA_DIR / "raw" / "semeval_task" / "task-a-es.tsv",
 }
-SPACY_MODEL_NAMES = {
-    "en": "en_core_web_sm",
-    "zh": "zh_core_web_sm",
-    "es": "es_core_news_sm",
-}
-KEYWORD_ALLOWED_POS = {
-    "en": {"NOUN", "PROPN"},
-    "zh": {"NOUN", "PROPN"},
-    "es": {"NOUN", "PROPN"},
-}
-DEFAULT_KEYWORD_POOL_SIZE = 2000
-DEFAULT_KEYWORD_CANDIDATE_LIMIT = 20000
-
-# Realtime multi-call group size.
-# Keep this relatively small to avoid malformed/truncated JSON responses.
-REALTIME_MULTI_GROUP_SIZE = 100
 
 
 def _normalize_keyword(text: str, lang: str) -> str:
